@@ -73,6 +73,12 @@ export const DEFAULT_SCOPE_ROUTING: ScopeRoute[] = [
 /** Glob patterns for memory files, relative to workspace root. */
 export const MEMORY_FILE_PATTERNS = ["MEMORY.md", "memory"];
 
+/**
+ * Ingest everything by default: an empty exclude list keeps the historical
+ * behaviour of walking the whole `memory/` tree.
+ */
+export const DEFAULT_MEMORY_EXCLUDE_PATTERNS: string[] = [];
+
 // ---------------------------------------------------------------------------
 // Env var resolution
 // ---------------------------------------------------------------------------
@@ -136,6 +142,9 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const recallScopes = Array.isArray(raw.recallScopes) ? raw.recallScopes : DEFAULT_RECALL_SCOPES;
   const defaultWriteScope = raw.defaultWriteScope || DEFAULT_WRITE_SCOPE;
   const scopeRouting = Array.isArray(raw.scopeRouting) ? raw.scopeRouting : DEFAULT_SCOPE_ROUTING;
+  const memoryExcludePatterns = Array.isArray(raw.memoryExcludePatterns)
+    ? raw.memoryExcludePatterns.filter((p): p is string => typeof p === "string" && p.trim() !== "")
+    : DEFAULT_MEMORY_EXCLUDE_PATTERNS;
 
   // Per-agent memory: strictly opt-in, never auto-enabled. All agents share
   // one dataset by default (matching the claude-code/codex integrations).
@@ -187,7 +196,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   return {
     mode, baseUrl, apiKey, username, password, datasetName,
     companyDataset, userDatasetPrefix, agentDatasetPrefix, agentDatasetTemplate, userId, agentId,
-    recallScopes, defaultWriteScope, scopeRouting, perAgentMemory,
+    recallScopes, defaultWriteScope, scopeRouting, memoryExcludePatterns, perAgentMemory,
     recallInjectionPosition, memoryHitFooter, memoryHitFooterFormat, weeklyDigest, memoryTools, memoryForgetTool, datasetSwitchTool, codeSearchTool, codeGraphRecall, codeDatasets, memorySteer, memorySteerText, recallSessionLayers, noiseTriggers, noisePatterns,
     enableSessions, persistSessionsAfterEnd, captureSession,
     searchType, searchPrompt, deleteMode,

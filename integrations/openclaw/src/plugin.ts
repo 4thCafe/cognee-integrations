@@ -606,7 +606,7 @@ const memoryCogneePlugin = {
       await stateReady;
       const agentId = normalizeAgentId(rawAgentId, cfg);
       return withAgentLock(agentId, async () => {
-        const allFiles = await collectMemoryFiles(workspaceDir);
+        const allFiles = await collectMemoryFiles(workspaceDir, cfg.memoryExcludePatterns);
         const agentFiles = allFiles.filter(
           (f) => routeFileToScope(f.path, cfg.scopeRouting, cfg.defaultWriteScope) === "agent",
         );
@@ -636,7 +636,7 @@ const memoryCogneePlugin = {
       logger: { info?: (msg: string) => void; warn?: (msg: string) => void },
     ): Promise<SyncResult> {
       await stateReady;
-      const files = await collectMemoryFiles(workspaceDir);
+      const files = await collectMemoryFiles(workspaceDir, cfg.memoryExcludePatterns);
       return syncFilesScoped(client, files, files, scopedIndexes, cfg, logger, undefined, ["company", "user"]);
     }
 
@@ -688,7 +688,7 @@ const memoryCogneePlugin = {
     ) {
       await stateReady;
 
-      const files = await collectMemoryFiles(workspaceDir);
+      const files = await collectMemoryFiles(workspaceDir, cfg.memoryExcludePatterns);
       if (files.length === 0) {
         logger.info?.("cognee-openclaw: no memory files found");
         return { added: 0, updated: 0, skipped: 0, errors: 0, deleted: 0 };
@@ -911,7 +911,7 @@ const memoryCogneePlugin = {
         .action(async (opts: { checkUpdates?: boolean }) => {
           await stateReady;
           await printVersionLine(opts?.checkUpdates);
-          const files = await collectMemoryFiles(cliWorkspaceDir);
+          const files = await collectMemoryFiles(cliWorkspaceDir, cfg.memoryExcludePatterns);
 
           if (multiScope) {
             const state = await loadDatasetState();
@@ -1083,7 +1083,7 @@ const memoryCogneePlugin = {
         .command("scopes")
         .description("Show memory scope routing for current workspace files")
         .action(async () => {
-          const files = await collectMemoryFiles(cliWorkspaceDir);
+          const files = await collectMemoryFiles(cliWorkspaceDir, cfg.memoryExcludePatterns);
           if (files.length === 0) {
             console.log("No memory files found.");
             process.exit(0);
@@ -1838,7 +1838,7 @@ const memoryCogneePlugin = {
               scopedIndexes = await loadScopedSyncIndexes();
             } catch { /* keep cached scopedIndexes */ }
 
-            const files = await collectMemoryFiles(workspaceDir);
+            const files = await collectMemoryFiles(workspaceDir, cfg.memoryExcludePatterns);
 
             let hasChanges = false;
             for (const file of files) {
@@ -1872,7 +1872,7 @@ const memoryCogneePlugin = {
               if (freshIndex.datasetName) syncIndex.datasetName = freshIndex.datasetName;
             } catch { /* keep cached syncIndex */ }
 
-            const files = await collectMemoryFiles(workspaceDir);
+            const files = await collectMemoryFiles(workspaceDir, cfg.memoryExcludePatterns);
             const changedFiles = files.filter((f) => {
               const existing = syncIndex.entries[f.path];
               return !existing || existing.hash !== f.hash;

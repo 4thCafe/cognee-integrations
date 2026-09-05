@@ -136,6 +136,13 @@
         },
         "description": "Rules to route memory files to scopes based on path patterns. First match wins."
       },
+      "memoryExcludePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Glob patterns (workspace-relative, same syntax as scopeRouting) for memory paths to skip during ingestion, e.g. 'memory/dreaming/**'. A matching directory is not descended into. Default: [] (ingest everything)."
+      },
       "enableSessions": {
         "type": "boolean",
         "description": "Enable session-based conversation tracking for multi-turn recall (default: true)"

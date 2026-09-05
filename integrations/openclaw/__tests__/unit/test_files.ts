@@ -141,3 +141,83 @@ describe("collectMemoryFiles", () => {
     await expect(collectMemoryFiles(workspace)).resolves.toEqual([]);
   });
 });
+
+describe("collectMemoryFiles exclude patterns", () => {
+  /** Collected `path` values under a given exclude list, sorted. */
+  async function collectedPathsExcluding(patterns: string[]): Promise<string[]> {
+    return (await collectMemoryFiles(workspace, patterns)).map((f) => f.path).sort();
+  }
+
+  it("collects everything when no patterns are given", async () => {
+    // The parameter is optional and defaults to []: every existing deployment
+    // must keep ingesting exactly what it ingested before.
+    await put("MEMORY.md");
+    await put("memory/notes.md");
+    await put("memory/dreaming/light/2026-01-01.md");
+    await expect(collectedPaths()).resolves.toEqual([
+      "MEMORY.md",
+      join("memory", "dreaming", "light", "2026-01-01.md"),
+      join("memory", "notes.md"),
+    ]);
+  });
+
+  it("excludes a whole subtree, however deeply nested", async () => {
+    // The motivating case: OpenClaw's dreaming phases write hundreds of files
+    // under memory/dreaming/{light,rem,deep}/ that are noise for retrieval.
+    await put("memory/notes.md");
+    await put("memory/dreaming/light/2026-01-01.md");
+    await put("memory/dreaming/rem/2026-01-02.md");
+    await put("memory/dreaming/deep/nested/deeper/2026-01-03.md");
+
+    await expect(collectedPathsExcluding(["memory/dreaming/**"])).resolves.toEqual([
+      join("memory", "notes.md"),
+    ]);
+  });
+
+  it("leaves sibling directories untouched", async () => {
+    // Excluding one tree must not be a blunt instrument: conversations/ is the
+    // reason to keep scanning memory/ at all.
+    await put("memory/conversations/2026-01-01.md");
+    await put("memory/bridge/gaps.md");
+    await put("memory/dreaming/light/2026-01-01.md");
+
+    await expect(
+      collectedPathsExcluding(["memory/dreaming/**", "memory/bridge/**"]),
+    ).resolves.toEqual([join("memory", "conversations", "2026-01-01.md")]);
+  });
+
+  it("excludes a single file without excluding its directory", async () => {
+    await put("memory/keep.md");
+    await put("memory/drop.md");
+    await expect(collectedPathsExcluding(["memory/drop.md"])).resolves.toEqual([
+      join("memory", "keep.md"),
+    ]);
+  });
+
+  it("can exclude MEMORY.md at the workspace root", async () => {
+    // The root file goes through the same match, so the two entries in
+    // MEMORY_FILE_PATTERNS behave consistently.
+    await put("MEMORY.md");
+    await put("memory/notes.md");
+    await expect(collectedPathsExcluding(["MEMORY.md"])).resolves.toEqual([
+      join("memory", "notes.md"),
+    ]);
+  });
+
+  it("matches a directory by name as well as by subtree", async () => {
+    // `memory/dreaming` (no /**) names the directory itself; pruning happens at
+    // the directory entry, so its contents never get read either way.
+    await put("memory/notes.md");
+    await put("memory/dreaming/light/2026-01-01.md");
+    await expect(collectedPathsExcluding(["memory/dreaming"])).resolves.toEqual([
+      join("memory", "notes.md"),
+    ]);
+  });
+
+  it("keeps everything when patterns match nothing", async () => {
+    await put("memory/notes.md");
+    await expect(collectedPathsExcluding(["memory/absent/**"])).resolves.toEqual([
+      join("memory", "notes.md"),
+    ]);
+  });
+});

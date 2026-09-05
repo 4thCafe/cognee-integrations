@@ -65,6 +65,13 @@ export type CogneePluginConfig = {
   defaultWriteScope?: MemoryScope;
   scopeRouting?: ScopeRoute[];
   /**
+   * Glob patterns (workspace-relative, same syntax as `scopeRouting.pattern`)
+   * for memory paths to skip during ingestion. A directory whose path matches
+   * is not descended into, so excluding a large tree costs one match rather
+   * than one read per file. Defaults to `[]` — ingest everything.
+   */
+  memoryExcludePatterns?: string[];
+  /**
    * Per-agent memory mode. When enabled, the `agent` scope is keyed by the
    * runtime agentId: each agent's files are read from its own workspace
    * (`ctx.workspaceDir`) and tracked in a per-agent sync index, so multiple
