@@ -72,8 +72,12 @@ def _http_server():
 
     Per-test isolation comes from ``mock_server``, which clears the handlers and
     request log and re-registers the routes against fresh state.
+
+    Every mock binds, and so is addressed as, 127.0.0.1 rather than localhost.
+    On Windows localhost resolves to ::1 first, and a refused connection there
+    costs about a second per request before the IPv4 retry.
     """
-    server = HTTPServer(host="localhost", port=0)
+    server = HTTPServer(host="127.0.0.1", port=0)
     server.start()
     try:
         yield server
@@ -102,8 +106,13 @@ def private_mock_server():
     SessionEnd sync). Against the suite-wide server they reach the next test's
     fresh mock and provision the plugin identity before that test's own session
     does, which then gets a 409. A per-test port sends them to a closed one.
+
+    Bound, and so addressed, as 127.0.0.1 rather than localhost: on Windows,
+    localhost resolves to ::1 first, and a refused connection there costs about
+    a second per request before the IPv4 retry, which made each whole session
+    take a minute on the Windows runner.
     """
-    server = HTTPServer(host="localhost", port=0)
+    server = HTTPServer(host="127.0.0.1", port=0)
     server.start()
     mock = MockCogneeServer(server)
     mock.identity.seed_api_key(DEFAULT_TEST_API_KEY)
@@ -222,7 +231,7 @@ def closed_port_url():
 @pytest.fixture(scope="session")
 def _platform_http_server():
     """A second session-scoped HTTPServer, on its own port (see _http_server)."""
-    server = HTTPServer(host="localhost", port=0)
+    server = HTTPServer(host="127.0.0.1", port=0)
     server.start()
     try:
         yield server
