@@ -12,8 +12,9 @@ Breaker semantics under test (SDK-356):
   * transient results (timeouts) are no-verdict: neither failure nor success
   * the trip reason (unreachable vs server_error) is recorded
 
-Migrated from claude-code/tests/test_cognee_client.py, parametrized over both
-suites (the client is identical; codex never had this coverage).
+Migrated from claude-code/tests/test_cognee_client.py, parametrized over all
+registered suites (the client is identical; Codex and Antigravity gain this
+coverage).
 """
 
 from __future__ import annotations
@@ -164,3 +165,24 @@ def test_dataset_forwarded_to_transport(cc, monkeypatch):
     monkeypatch.setattr(cc, "do_recall", _capture)
     cc.recall(URL, "", "q", "", '["graph"]', "5", "my_dataset")
     assert captured.get("dataset") == "my_dataset"
+
+
+def test_search_skill_shares_the_hooks_breaker(suite):
+    """cognee-search.sh must not redirect COGNEE_PLUGIN_STATE_DIR: that gave the
+    skill a private breaker in the per-plugin dir while the hooks, doctor and
+    status line used ~/.cognee-plugin/recall-breaker.json."""
+    script = (suite.scripts_dir / "cognee-search.sh").read_text(encoding="utf-8")
+    exports = [
+        line
+        for line in script.splitlines()
+        if "COGNEE_PLUGIN_STATE_DIR=" in line and not line.lstrip().startswith("#")
+    ]
+    assert exports == [], exports
+
+
+def test_default_breaker_path_is_the_shared_root(suite, isolated_modules, monkeypatch):
+    client = isolated_modules(suite, "_cognee_client")
+    monkeypatch.delenv("COGNEE_PLUGIN_STATE_DIR", raising=False)
+    path = client._state_path()
+    assert path.name == "recall-breaker.json"
+    assert path.parent.name == ".cognee-plugin", path

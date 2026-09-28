@@ -3,7 +3,7 @@
 Registered as a plugin by ``integrations/tests/conftest.py``.
 
 Key fixtures:
-  - ``suite``            : parametrized over claude-code and codex
+  - ``suite``            : parametrized over every available host integration
   - ``temp_home``        : isolated HOME dir for the test (nothing hits real ~)
   - ``project_dir``      : isolated working dir (the hook ``cwd``)
   - ``mock_server``      : running MockCogneeServer (ephemeral port)
@@ -14,6 +14,7 @@ Key fixtures:
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 from pathlib import Path
@@ -35,10 +36,17 @@ from utils.suites import ALL_SUITES, Suite
 #: happy path needs no per-test identity seeding.
 DEFAULT_TEST_API_KEY = "test-api-key"
 
+# Windows CI runs each host in parallel. Keep ALL_SUITES intact so tests of
+# shared runtime/version contracts still compare every installed integration.
+_REQUESTED_SUITE = os.environ.get("COGNEE_TEST_SUITE", "").strip()
+_SELECTED_SUITES = [s for s in ALL_SUITES if not _REQUESTED_SUITE or s.name == _REQUESTED_SUITE]
+if not _SELECTED_SUITES:
+    raise pytest.UsageError(f"Unknown COGNEE_TEST_SUITE: {_REQUESTED_SUITE!r}")
 
-@pytest.fixture(params=ALL_SUITES, ids=lambda s: s.name)
+
+@pytest.fixture(params=_SELECTED_SUITES, ids=lambda s: s.name)
 def suite(request) -> Suite:
-    """Run the test once per integration suite (claude-code, codex)."""
+    """Run the test once per available host integration suite."""
     return request.param
 
 
@@ -64,8 +72,12 @@ def _http_server():
 
     Per-test isolation comes from ``mock_server``, which clears the handlers and
     request log and re-registers the routes against fresh state.
+
+    Every mock binds, and so is addressed as, 127.0.0.1 rather than localhost.
+    On Windows localhost resolves to ::1 first, and a refused connection there
+    costs about a second per request before the IPv4 retry.
     """
-    server = HTTPServer(host="localhost", port=0)
+    server = HTTPServer(host="127.0.0.1", port=0)
     server.start()
     try:
         yield server
@@ -84,6 +96,30 @@ def mock_server(_http_server):
     mock = MockCogneeServer(_http_server)
     mock.identity.seed_api_key(DEFAULT_TEST_API_KEY)
     return mock
+
+
+@pytest.fixture
+def private_mock_server():
+    """A mock Cognee server on a port of its own, for tests that run whole sessions.
+
+    A session leaves detached processes behind (the exit watcher, the deferred
+    SessionEnd sync). Against the suite-wide server they reach the next test's
+    fresh mock and provision the plugin identity before that test's own session
+    does, which then gets a 409. A per-test port sends them to a closed one.
+
+    Bound, and so addressed, as 127.0.0.1 rather than localhost: on Windows,
+    localhost resolves to ::1 first, and a refused connection there costs about
+    a second per request before the IPv4 retry, which made each whole session
+    take a minute on the Windows runner.
+    """
+    server = HTTPServer(host="127.0.0.1", port=0)
+    server.start()
+    mock = MockCogneeServer(server)
+    mock.identity.seed_api_key(DEFAULT_TEST_API_KEY)
+    try:
+        yield mock
+    finally:
+        server.stop()
 
 
 @pytest.fixture
@@ -195,7 +231,7 @@ def closed_port_url():
 @pytest.fixture(scope="session")
 def _platform_http_server():
     """A second session-scoped HTTPServer, on its own port (see _http_server)."""
-    server = HTTPServer(host="localhost", port=0)
+    server = HTTPServer(host="127.0.0.1", port=0)
     server.start()
     try:
         yield server

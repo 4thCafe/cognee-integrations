@@ -144,6 +144,54 @@ class TestEnsureLocalServer(unittest.TestCase):
                 sb.ensure_local_server(8000, boot_timeout=600.0, log_path="/var/log/cognee.log")
 
 
+class TestServerLogRotation(unittest.TestCase):
+    """server.log is capped by rotation at spawn — it cannot be silenced (the
+    overflow scan reads it), but it must not grow without bound either."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log = Path(self.tmp.name) / "server.log"
+
+    def test_small_log_is_left_alone(self):
+        self.log.write_bytes(b"x" * 100)
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertTrue(self.log.exists())
+        self.assertFalse((self.log.parent / "server.log.1").exists())
+
+    def test_oversized_log_rotates_to_one_kept_generation(self):
+        self.log.write_bytes(b"old" * 400)
+        self.assertTrue(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertFalse(self.log.exists())
+        self.assertEqual((self.log.parent / "server.log.1").read_bytes(), b"old" * 400)
+        # A second rotation replaces the previous generation rather than stacking.
+        self.log.write_bytes(b"new" * 400)
+        self.assertTrue(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.assertEqual((self.log.parent / "server.log.1").read_bytes(), b"new" * 400)
+
+    def test_missing_log_and_zero_cap_are_noops(self):
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=1000))
+        self.log.write_bytes(b"x" * 5000)
+        self.assertFalse(sb.rotate_oversized_log(str(self.log), max_bytes=0))
+        self.assertTrue(self.log.exists())
+
+    def test_cap_comes_from_env(self):
+        with mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "1000"}):
+            self.assertEqual(sb._server_log_cap(), 1000)
+        with mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "nonsense"}):
+            self.assertEqual(sb._server_log_cap(), sb.SERVER_LOG_MAX_BYTES)
+
+    def test_spawn_rotates_before_handing_the_log_to_the_child(self):
+        self.log.write_bytes(b"x" * 5000)
+        with (
+            mock.patch.dict("os.environ", {sb.SERVER_LOG_MAX_BYTES_ENV: "1000"}),
+            mock.patch.object(sb.subprocess, "Popen", return_value=mock.MagicMock()),
+        ):
+            sb._spawn(8000, None, None, str(self.log))
+        self.assertTrue((self.log.parent / "server.log.1").exists())
+        self.assertLess(self.log.stat().st_size, 1000)  # fresh file for the new server
+
+
 class TestSpawnEnvironment(unittest.TestCase):
     """The spawned server's environment — where the session cache lives or dies."""
 
@@ -686,6 +734,70 @@ class TestConfigModes(unittest.TestCase):
         with mock.patch.dict("os.environ", env, clear=False):
             cfg = config_mod.load_config()
         self.assertEqual(cfg["local_port"], 65535)
+
+
+class TestSpawnEnv(unittest.TestCase):
+    """The env ``_spawn`` hands the server: default-user credentials.
+
+    cognee >= 1.6.0 creates the default user only when DEFAULT_USER_PASSWORD is
+    set, so the spawned server is told the plugin's literal defaults — never the
+    COGNEE_USER_* login selection, since the server (and its once-set default
+    password) is shared by every cognee plugin.
+    """
+
+    def _spawn_env(self, extra=None, drop=()):
+        base = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("DEFAULT_USER_", "COGNEE_USER_")) and k not in drop
+        }
+        base.update(extra or {})
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log_path = str(Path(tmp.name) / "server.log")
+        with (
+            mock.patch.dict("os.environ", base, clear=True),
+            mock.patch.object(sb.subprocess, "Popen") as popen,
+        ):
+            sb._spawn(8011, "", "", log_path)
+        self.assertEqual(popen.call_count, 1)
+        return popen.call_args.kwargs["env"]
+
+    def test_defaults_match_the_login_the_transport_performs(self):
+        from cognee_integration_hermes.http_backend import (
+            DEFAULT_USER_EMAIL,
+            DEFAULT_USER_PASSWORD,
+        )
+
+        env = self._spawn_env()
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], DEFAULT_USER_EMAIL)
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], DEFAULT_USER_PASSWORD)
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "default_user@example.com")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "default_password")
+
+    def test_cognee_user_login_selection_does_not_redefine_the_default_user(self):
+        env = self._spawn_env(
+            {"COGNEE_USER_EMAIL": "me@example.org", "COGNEE_USER_PASSWORD": "s3cret"}
+        )
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "default_user@example.com")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "default_password")
+
+    def test_an_explicit_default_user_export_wins(self):
+        env = self._spawn_env(
+            {
+                "DEFAULT_USER_EMAIL": "ops@example.org",
+                "DEFAULT_USER_PASSWORD": "operator-set",
+                "COGNEE_USER_PASSWORD": "ignored-for-the-server",
+            }
+        )
+        self.assertEqual(env["DEFAULT_USER_EMAIL"], "ops@example.org")
+        self.assertEqual(env["DEFAULT_USER_PASSWORD"], "operator-set")
+
+    def test_the_other_server_flags_are_still_set(self):
+        env = self._spawn_env()
+        self.assertEqual(env["CACHING"], "true")
+        self.assertEqual(env["HTTP_API_PORT"], "8011")
+        self.assertEqual(env["COGNEE_AGENT_MODE"], "true")
 
 
 if __name__ == "__main__":
