@@ -18,9 +18,9 @@ name: Plugin Clean Install
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
   # Catch breakage from new codex / claude CLI releases even when the repo is quiet.
   schedule:
     - cron: '40 4 * * *'

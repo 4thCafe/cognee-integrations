@@ -16,7 +16,7 @@ name: Plugin Windows Tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
@@ -24,7 +24,7 @@ on:
       - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
