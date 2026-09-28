@@ -12,7 +12,7 @@ on:
       - 'scripts/tests/test_version_consistency.py'
       - '.github/workflows/check-version-consistency.yml'
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'integrations/inventory.yml'
       - 'integrations/**/plugin.json'

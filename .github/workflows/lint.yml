@@ -8,7 +8,7 @@ on:
       - 'scripts/**/*.py'
       - 'pyproject.toml'
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'integrations/**/*.py'
       - 'scripts/**/*.py'

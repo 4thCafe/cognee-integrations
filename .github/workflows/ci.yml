@@ -8,7 +8,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/core-team.txt'
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'

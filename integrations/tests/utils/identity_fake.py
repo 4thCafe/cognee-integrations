@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import secrets
 from typing import Any
 
 
@@ -65,6 +66,13 @@ class IdentityFake:
 
     def __init__(self) -> None:
         self._counter = itertools.count(1)
+        # Minted keys carry a per-server nonce. Detached plugin processes (the
+        # exit watcher, the deferred SessionEnd sync) can outlive the test that
+        # started them and reach the NEXT test's server on a fixed port (the
+        # local-mode e2e tests use 8011). With plain counters their cached key
+        # was valid again there, and a late sync created the principal's
+        # dataset before that test's shared-memory wiring ran. Now it is a 401.
+        self._key_nonce = secrets.token_hex(4)
         self.users: dict[str, dict[str, Any]] = {}  # email -> {password, id}
         self.jwt_to_email: dict[str, str] = {}
         self.user_api_keys: dict[str, list[dict[str, str]]] = {}  # email -> [{"key": k}]
@@ -114,6 +122,10 @@ class IdentityFake:
     def _new_id(self, prefix: str) -> str:
         return f"{prefix}-{next(self._counter)}"
 
+    def _new_key(self, prefix: str) -> str:
+        """An API key unique to this server instance (see ``_key_nonce``)."""
+        return f"{prefix}-{self._key_nonce}-{next(self._counter)}"
+
     # -- seeding API (drive branches) -------------------------------------
     def seed_user(self, email: str, password: str = "default_password") -> None:
         self.users.setdefault(email, {"password": password, "id": self._new_id("user")})
@@ -122,7 +134,7 @@ class IdentityFake:
     def seed_owner_key(self, email: str, key: str | None = None) -> str:
         """Pre-create an owner API key so the GET /auth/api-keys reuse path runs."""
         self.seed_user(email)
-        key = key or self._new_id("ownerkey")
+        key = key or self._new_key("ownerkey")
         self.user_api_keys[email].append({"key": key})
         self.valid_keys[key] = {"owner": email, "valid": True}
         return key
@@ -161,7 +173,7 @@ class IdentityFake:
         email = self.jwt_to_email.get(auth_token or "")
         if not email:
             return 401, {"detail": "not authenticated"}
-        key = self._new_id("apikey")
+        key = self._new_key("apikey")
         self.user_api_keys.setdefault(email, []).append({"key": key})
         self.valid_keys[key] = {"owner": email, "valid": True}
         return 200, {"key": key}
@@ -234,7 +246,7 @@ class IdentityFake:
             self.parent_of[record["agent_id"]] = owner_id
             self.active_tenant[record["agent_id"]] = self.active_tenant.get(owner_id)
 
-        new_key = self._new_id("agentkey")
+        new_key = self._new_key("agentkey")
         self.valid_keys[new_key] = {"owner": record["agent_email"], "valid": True}
         for old_key in record["keys"]:
             self.invalidate_key(old_key)

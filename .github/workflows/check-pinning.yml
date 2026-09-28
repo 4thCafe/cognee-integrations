@@ -6,7 +6,7 @@ on:
     paths:
       - 'integrations/*/pyproject.toml'
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'integrations/*/pyproject.toml'
 

@@ -24,7 +24,7 @@ on:
       - 'integrations/tests/**'
       - '.github/workflows/plugin-windows-tests.yml'
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
