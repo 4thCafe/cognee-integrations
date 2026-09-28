@@ -33,6 +33,8 @@ import json
 import secrets
 from typing import Any
 
+_MINTED_KEY_PREFIXES = ("apikey", "agentkey", "ownerkey")
+
 
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -125,6 +127,22 @@ class IdentityFake:
     def _new_key(self, prefix: str) -> str:
         """An API key unique to this server instance (see ``_key_nonce``)."""
         return f"{prefix}-{self._key_nonce}-{next(self._counter)}"
+
+    def is_foreign_minted_key(self, api_key: str | None) -> bool:
+        """True for a key another fake server minted (an earlier test's).
+
+        Hand-written test keys never match the ``<prefix>-<nonce>-<n>`` shape,
+        so they keep their permissive treatment; only a stale minted key from a
+        detached process of an earlier test is recognised and refused.
+        """
+        parts = str(api_key or "").split("-")
+        return (
+            len(parts) == 3
+            and parts[0] in _MINTED_KEY_PREFIXES
+            and len(parts[1]) == 8
+            and parts[2].isdigit()
+            and parts[1] != self._key_nonce
+        )
 
     # -- seeding API (drive branches) -------------------------------------
     def seed_user(self, email: str, password: str = "default_password") -> None:
@@ -333,6 +351,11 @@ class IdentityFake:
 
     def datasets_create(self, name: str, api_key: str | None = None) -> tuple[int, dict[str, Any]]:
         """POST /datasets as the key's user (the principal when no key is given)."""
+        if self.is_foreign_minted_key(api_key):
+            # A detached process left over from an earlier test, holding that
+            # test's minted key, must not create the principal's dataset here:
+            # it changed what this test's SessionStart saw (tenantless_with_data).
+            return 401, {"detail": "invalid api key"}
         owner = self.user_id_for_key(api_key) if api_key else self.principal_id
         owner = owner or self.principal_id
         new = not any(
