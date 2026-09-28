@@ -2,11 +2,11 @@ name: Check Version Pinning
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/*/pyproject.toml'
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/*/pyproject.toml'
 

@@ -2,13 +2,13 @@ name: Integration Tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'
       - '.github/core-team.txt'
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/**'
       - '.github/workflows/ci.yml'

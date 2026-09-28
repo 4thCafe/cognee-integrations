@@ -2,7 +2,7 @@ name: Check Version Consistency
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/inventory.yml'
       - 'integrations/**/plugin.json'
@@ -12,7 +12,7 @@ on:
       - 'scripts/tests/test_version_consistency.py'
       - '.github/workflows/check-version-consistency.yml'
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/inventory.yml'
       - 'integrations/**/plugin.json'
