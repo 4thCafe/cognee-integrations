@@ -10,7 +10,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [1.6.1]
 
 ### Added
-- **Graph recall is scoped to the session's project.** Every prompt's graph
+- **`COGNEE_RECALL_MIN_PROMPT_CHARS` — skip recall on short prompts.** The
+  per-prompt context lookup ran on every prompt of five or more characters, so
+  acknowledgements and one-word nudges ("Try again", "approved") each cost a
+  lookup and an injected context block. Raising the floor (surrounding
+  whitespace not counted) skips recall for shorter prompts; values below `5` or
+  non-numeric fall back to the stock gate, and unset nothing changes. Prompt
+  capture keeps its own five-character floor, so short replies still enter the
+  session record. Contributed by @nagelm (#403).
+- New event: `recall.lookup_short_prompt`.
+- - **Graph recall is scoped to the session's project.** Every prompt's graph
   recall searched the whole dataset, so on a shared graph other projects'
   documents and sessions dominated the hits. A session that names a project
   (`COGNEE_PROJECT_NODE_SET`, or the recall-only `COGNEE_RECALL_PROJECT_NODE_SET`)
@@ -22,6 +31,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   changes without a project name. In the author's A/B over 18 judged prompts
   across five projects, cross-project bleed fell from 0.72 to 0.06 and injected
   context shrank by 20%. Contributed by @nagelm (#402).
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups in HTTP mode.**
+  `store-to-session.py` resolved the session with `load_resolved()`, which
+  queries `/agents/connections/me` and then `/users/me` (10s timeout each) on
+  every PostToolUse and Stop. Only the local SDK path uses the user id, so the
+  lookup now runs only in that mode; on a slow backend HTTP mode no longer
+  waits up to ~20s before an entry is written or buffered. Diagnosed by
+  @Zozi96 (#270).
 
 ## [1.6.0]
 
