@@ -35,6 +35,8 @@ def create_app(config: Config | None = None, tapes: TapesClient | None = None) -
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
+        # Stop a running sync before its HTTP client goes away under it.
+        await syncer.shutdown()
         await tapes.aclose()
 
     # The tapes manifest at /openapi is the public contract; FastAPI's own
@@ -60,12 +62,14 @@ def create_app(config: Config | None = None, tapes: TapesClient | None = None) -
     @app.post("/api/sync")
     async def sync(request: SyncRequest | None = None) -> dict:
         request = request or SyncRequest()
-        if request.wait:
-            if syncer.is_running():
-                return {"accepted": False, "status": syncer.status.snapshot()}
-            status = await syncer.run(full=request.full)
-            return {"accepted": True, "status": status.snapshot()}
+        # Both paths start the run through the one tracked task, so a waited-on
+        # sync counts as running and a concurrent request cannot start a second.
         accepted = syncer.start(full=request.full)
+        if request.wait:
+            if not accepted:
+                return {"accepted": False, "status": syncer.status.snapshot()}
+            status = await syncer.wait()
+            return {"accepted": True, "status": status.snapshot()}
         return {"accepted": accepted, "status": syncer.status.snapshot()}
 
     @app.post("/api/sync/status")

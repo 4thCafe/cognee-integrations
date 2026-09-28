@@ -1,7 +1,10 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +35,7 @@ def apply_storage_isolation(config: Config) -> None:
 
 @dataclass
 class SyncStatus:
-    state: str = "idle"  # idle | running | completed | failed
+    state: str = "idle"  # idle | running | completed | failed | cancelled
     started_at: str | None = None
     finished_at: str | None = None
     fetched: int = 0
@@ -60,7 +63,10 @@ class Syncer:
     """Pulls sessions from tapes and ingests them into a cognee dataset.
 
     Single-flight: the cassette is one async process, so an ``asyncio`` task
-    handle (not a file lock) is what prevents overlapping runs.
+    handle (not a file lock) is what prevents overlapping runs. Every sync,
+    including one a caller waits on, goes through ``start()`` and that one
+    task; the check and the ``create_task`` have no ``await`` between them, so
+    two requests can never both start a run against the same state file.
     """
 
     def __init__(self, config: Config, tapes: TapesClient):
@@ -86,7 +92,20 @@ class Syncer:
         return _State()
 
     def _save_state(self, state: _State) -> None:
-        self._config.state_path.write_text(json.dumps(asdict(state), indent=2))
+        """Write the state atomically: a crash mid-write keeps the previous file."""
+        path = self._config.state_path
+        payload = json.dumps(asdict(state), indent=2)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     # -- sync --------------------------------------------------------------
 
@@ -94,13 +113,28 @@ class Syncer:
         """Kick off a background sync; returns False if one is already running."""
         if self.is_running():
             return False
-        self._task = asyncio.create_task(self.run(full=full))
+        self._task = asyncio.create_task(self._run(full=full))
         return True
 
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def run(self, full: bool = False) -> SyncStatus:
+    async def wait(self) -> SyncStatus:
+        """Wait for the current (or last) sync and return its status."""
+        if self._task is None:
+            return self.status
+        return await asyncio.shield(self._task)
+
+    async def shutdown(self) -> None:
+        """Cancel a running sync and wait for it, before the tapes client closes."""
+        task = self._task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _run(self, full: bool = False) -> SyncStatus:
         status = SyncStatus(
             state="running",
             started_at=datetime.now(timezone.utc).isoformat(),
@@ -171,6 +205,10 @@ class Syncer:
                 self._save_state(state)
 
             status.state = "completed"
+        except asyncio.CancelledError:
+            # Shutdown mid-sync: progress so far is already saved per session.
+            status.state = "cancelled"
+            raise
         except Exception as exc:  # noqa: BLE001 — surfaced via status, not a crashed task
             logger.exception("Sync failed.")
             status.state = "failed"

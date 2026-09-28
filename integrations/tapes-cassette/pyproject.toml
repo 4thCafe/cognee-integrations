@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Cognee team" }]
 dependencies = [
-    "cognee>=0.5.1,<0.6.0",
+    "cognee>=1.6.0,<1.7.0",
     "fastapi>=0.110,<1",
     "uvicorn>=0.27,<1",
     "httpx>=0.27,<1",
