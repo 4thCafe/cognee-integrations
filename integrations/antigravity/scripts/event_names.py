@@ -7,6 +7,7 @@ import os
 EVENT_NAMES = {
     "hook:base_url_changed_mid_session": "endpoint.base_url_changed_mid_session",
     "hook:base_url_notice_failed": "endpoint.base_url_notice_failed",
+    "hook:switch_sync_timeout": "switch.sync_timeout",
     "hook:sync_worker_detached": "lifecycle.sync_worker_detached",
     "hook:sync_execution_skipped_not_idle": "lifecycle.sync_execution_skipped_not_idle",
     "hook:sync_deferred_to_execution_worker": "lifecycle.sync_deferred_to_execution_worker",

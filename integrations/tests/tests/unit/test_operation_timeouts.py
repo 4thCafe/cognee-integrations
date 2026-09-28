@@ -25,7 +25,16 @@ def pc(suite, isolated_modules, monkeypatch):
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, 120.0), ("", 120.0), ("7.5", 7.5), ("not-a-number", 120.0)],
+    [
+        (None, 120.0),
+        ("", 120.0),
+        ("7.5", 7.5),
+        ("not-a-number", 120.0),
+        ("0", 120.0),
+        ("-5", 120.0),
+        ("inf", 120.0),
+        ("nan", 120.0),
+    ],
 )
 def test_remember_timeout_reads_its_env_var(remember, monkeypatch, value, expected):
     if value is None:
@@ -78,3 +87,10 @@ def test_register_timeout_env_override_and_malformed_value(pc, monkeypatch):
 def test_explicit_register_timeout_wins_over_the_env(pc, monkeypatch):
     monkeypatch.setenv("COGNEE_REGISTER_TIMEOUT", "4")
     assert _capture_register_timeout(pc, monkeypatch, timeout=2.0) == 2.0
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "inf", "nan"])
+def test_register_timeout_ignores_non_positive_and_non_finite_values(pc, monkeypatch, value):
+    """A socket timeout of 0 fails at once and inf/nan raise; fall back to 15."""
+    monkeypatch.setenv("COGNEE_REGISTER_TIMEOUT", value)
+    assert _capture_register_timeout(pc, monkeypatch) == 15.0
