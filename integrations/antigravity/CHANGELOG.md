@@ -7,6 +7,76 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1]
+
+### Added
+- **`COGNEE_RECALL_MIN_PROMPT_CHARS` — skip recall on short prompts.** The
+  per-prompt context lookup ran on every prompt of five or more characters, so
+  acknowledgements and one-word nudges ("Try again", "approved") each cost a
+  lookup and an injected context block. Raising the floor (surrounding
+  whitespace not counted) skips recall for shorter prompts; values below `5` or
+  non-numeric fall back to the stock gate, and unset nothing changes. Prompt
+  capture keeps its own five-character floor, so short replies still enter the
+  session record. Contributed by @nagelm (#403).
+- New event: `recall.lookup_short_prompt`.
+
+- **Graph recall is scoped to the session's project.** Every prompt's graph
+  recall searched the whole dataset, so on a shared graph other projects'
+  documents and sessions dominated the hits. A session that names a project
+  (`COGNEE_PROJECT_NODE_SET`, or the recall-only `COGNEE_RECALL_PROJECT_NODE_SET`)
+  now sends `node_name=[<project>, <shared sets>]` with the `OR` operator on the
+  graph scope. `COGNEE_RECALL_SHARED_NODE_SETS` (default `global,user_context`)
+  names the sets every project may read, so preferences saved with
+  `cognee-remember` stay recallable everywhere; `COGNEE_RECALL_PROJECT_SCOPE=false`
+  turns scoping off. Session, trace and code recall stay unfiltered, and nothing
+  changes without a project name. In the author's A/B over 18 judged prompts
+  across five projects, cross-project bleed fell from 0.72 to 0.06 and injected
+  context shrank by 20%. Contributed by @nagelm (#402).
+
+- **Per-operation timeouts for remember and register.** Only recall was
+  tunable; the explicit remember submit and the session register call had
+  hardcoded client timeouts. `COGNEE_REMEMBER_TIMEOUT` (default `120`) and
+  `COGNEE_REGISTER_TIMEOUT` (default `15`) now set them independently, falling
+  back to those historical values when unset, malformed, zero, negative or
+  non-finite; an explicit caller timeout still wins. The README's new "Per-operation timeouts" table also
+  documents `COGNEE_RECALL_BUDGET` and `COGNEE_RECALL_TIMEOUT`. Originally
+  contributed by @RajdeepKushwaha5 (#167), reworked by @rshkarin (#259).
+
+
+### Fixed
+- **Capture hooks no longer wait on identity lookups in HTTP mode.**
+  `store-to-session.py` resolved the session with `load_resolved()`, which
+  queries `/agents/connections/me` and then `/users/me` (10s timeout each) on
+  every PostToolUse and Stop. Only the local SDK path uses the user id, so the
+  lookup now runs only in that mode; on a slow backend HTTP mode no longer
+  waits up to ~20s before an entry is written or buffered. Diagnosed by
+  @Zozi96 (#270).
+
+- **A mid-session `COGNEE_BASE_URL` change is reported.** Hooks re-read
+  `~/.cognee/.env` in every process, so editing the URL during a session reached
+  later hooks while the session stayed registered on the server SessionStart
+  connected to, and it half-applied silently. SessionStart now records the
+  launch's server; when a later prompt resolves a different one, the recall hook
+  shows a one-time notice naming both servers and asking for a new session
+  (events `endpoint.base_url_changed_mid_session`). Nothing is re-registered
+  mid-session. Prompted by #262 by @rshkarin (a rework of #192 by @SaviPandey).
+
+- **Dataset names are sanitized for cognee.** cognee rejects a dataset name
+  containing a space or a dot, and a `COGNEE_PLUGIN_DATASET` like `my project`
+  or `team.v2` used to reach the server unchanged and fail every write. The
+  configured name now has spaces and dots replaced with `_` (logged as
+  `config.dataset_name_sanitized`); nothing else changes, so every name the
+  server already accepts stays exactly as it is. The switch-datasets command
+  refuses such a name and suggests the sanitized form instead of rewriting it.
+  Code-graph datasets for repositories with a dot in their name (`foo.js`) are
+  now `codebase-foo-js-…` and can be indexed. The rule is shared across
+  integrations in `integrations/conformance/dataset_name_cases.json`. First
+  implemented by @eiza763 (#226).
+- **A dataset switch whose sync times out fails cleanly.** The pre-switch sync's
+  timeout escaped as a crash, so `--force` could not continue past it; it is now
+  reported as a sync failure (exit code and `switch.sync_timeout` event), and a
+  malformed or non-positive `COGNEE_SWITCH_SYNC_TIMEOUT` falls back to 900s.
+
 ## [1.6.0]
 
 ### Changed
