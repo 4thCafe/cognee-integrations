@@ -105,3 +105,37 @@ def test_search_rejects_unknown_search_type(app):
 
 def test_search_requires_query(app):
     assert client(app).post("/api/search", json={}).status_code == 422
+
+
+def test_search_serializes_cognee_1x_results(app, fake_cognee):
+    """cognee 1.x (access control on) returns dicts with UUID dataset ids."""
+    import uuid
+
+    dataset_id = uuid.UUID("81b8d9ac-cb03-4a63-ad93-67033f8257e6")
+    fake_cognee.search_results = [
+        {
+            "dataset_id": dataset_id,
+            "dataset_name": "test_sessions",
+            "dataset_tenant_id": None,
+            "search_result": ["The SSO callback drops the session cookie."],
+        }
+    ]
+    body = client(app).post("/api/search", json={"query": "why does SSO fail?"}).json()
+    assert body["results"] == [
+        {
+            "dataset_id": str(dataset_id),
+            "dataset_name": "test_sessions",
+            "dataset_tenant_id": None,
+            "search_result": ["The SSO callback drops the session cookie."],
+        }
+    ]
+
+
+def test_search_before_first_cognify_is_empty_not_an_error(app, fake_cognee):
+    """cognee 1.6 raises NoDataError for a dataset with data but no graph yet."""
+    from cognee.modules.retrieval.exceptions.exceptions import NoDataError
+
+    fake_cognee.search_results = NoDataError("knowledge graph is empty; run cognify")
+    response = client(app).post("/api/search", json={"query": "anything"})
+    assert response.status_code == 200
+    assert response.json() == {"results": []}

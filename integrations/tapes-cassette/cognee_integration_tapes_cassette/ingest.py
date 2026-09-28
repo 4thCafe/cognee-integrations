@@ -11,10 +11,18 @@ from pathlib import Path
 
 import cognee
 from cognee import SearchType
+from fastapi.encoders import jsonable_encoder
 
 from .config import Config
 from .tapes_client import TapesClient, parse_ts
 from .transcript import build_transcript, get_status
+
+try:  # cognee >= 1.6 raises this for a dataset that has data but no graph yet
+    from cognee.modules.retrieval.exceptions.exceptions import NoDataError
+except ImportError:  # pragma: no cover — moved in a future cognee; nothing to catch
+    NoDataError = None
+
+_NOTHING_SEARCHABLE = (NoDataError,) if NoDataError is not None else ()
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +232,14 @@ class Syncer:
 
 
 def _jsonable(value):
+    """JSON-safe form of one search result.
+
+    cognee 1.x returns dicts carrying ``UUID`` dataset ids (with backend access
+    control on, the default) or pydantic models; ``jsonable_encoder`` turns those
+    into plain JSON. ``str()`` is only the last resort for anything it rejects.
+    """
     try:
-        json.dumps(value)
-        return value
+        return jsonable_encoder(value)
     except (TypeError, ValueError):
         return str(value)
 
@@ -238,10 +251,17 @@ async def search(config: Config, query: str, search_type: str, top_k: int) -> li
         valid = ", ".join(t.name for t in SearchType)
         raise ValueError(f"Unknown search_type {search_type!r}. Valid values: {valid}") from None
 
-    results = await cognee.search(
-        query_type=query_type,
-        query_text=query,
-        datasets=[config.dataset_name],
-        top_k=top_k,
-    )
+    try:
+        results = await cognee.search(
+            query_type=query_type,
+            query_text=query,
+            datasets=[config.dataset_name],
+            top_k=top_k,
+        )
+    except _NOTHING_SEARCHABLE as exc:
+        # Before the first cognify completes (a fresh install, or a failed
+        # cognify still pending) there is nothing to search: an empty result,
+        # not a server error.
+        logger.info("Nothing searchable yet in %s: %s", config.dataset_name, exc)
+        return []
     return [_jsonable(result) for result in results]

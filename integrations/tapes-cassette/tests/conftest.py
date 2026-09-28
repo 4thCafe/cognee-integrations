@@ -106,6 +106,8 @@ class FakeCognee:
 
     async def search(self, **kwargs):
         self.search_calls.append(kwargs)
+        if isinstance(self.search_results, Exception):
+            raise self.search_results
         return list(self.search_results)
 
 
