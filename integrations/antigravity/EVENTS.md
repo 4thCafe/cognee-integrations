@@ -46,6 +46,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:auto_improve_error` | `auto.improve_error` |
 | `hook:auto_improve_fired` | `auto.improve_fired` |
 | `hook:auto_improve_throttled` | `auto.improve_throttled` |
+| `hook:base_url_changed_mid_session` | `endpoint.base_url_changed_mid_session` |
+| `hook:base_url_notice_failed` | `endpoint.base_url_notice_failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
 | `hook:bootstrap_failed` | `bootstrap.failed` |
@@ -85,6 +87,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_hit` | `recall.lookup_hit` |
 | `hook:context_lookup_missing_session_key` | `recall.lookup_missing_session_key` |
 | `hook:context_lookup_session_key` | `recall.lookup_session_key` |
+| `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
 | `hook:credits_fetch_empty` | `credits.fetch_empty` |
 | `hook:credits_fetch_failed` | `credits.fetch_failed` |
 | `hook:credits_marker_write_failed` | `credits.marker_write_failed` |

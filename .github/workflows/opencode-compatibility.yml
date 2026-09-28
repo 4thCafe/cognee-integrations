@@ -3,7 +3,7 @@ on:
   pull_request:
     paths: ['integrations/opencode/**', '.github/workflows/opencode-compatibility.yml']
   push:
-    branches: [main]
+    branches: [main, dev]
     paths: ['integrations/opencode/**', '.github/workflows/opencode-compatibility.yml']
 jobs:
   compatibility:
