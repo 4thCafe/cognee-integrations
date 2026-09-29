@@ -1,6 +1,6 @@
 """Turn a tapes session export payload into a readable transcript.
 
-Extraction rules follow the tapes exporter integration (PR #362): only "main"
+Extraction rules come from the original tapes exporter (#362): only "main"
 LLM spans become transcript text — injected system context, permission-check
 offshoots, and other harness-internal spans are skipped, and tool calls are
 summarized down to a curated set of argument keys so large diffs/file contents

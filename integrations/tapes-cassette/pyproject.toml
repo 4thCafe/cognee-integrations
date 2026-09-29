@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 cognee-tapes-cassette = "cognee_integration_tapes_cassette.server:main"
+cognee-tapes-sync = "cognee_integration_tapes_cassette.cli:run"
 
 [project.urls]
 Homepage = "https://github.com/topoteretes/cognee-integrations/tree/main/integrations/tapes-cassette"

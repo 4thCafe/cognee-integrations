@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from . import ingest
-from .config import Config, load_config
+from .config import Config, load_config, load_env_file
 from .manifest import build_openapi_spec
 from .tapes_client import TapesClient
 
@@ -92,6 +92,7 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    load_env_file()
     config = load_config()
     logger.info(
         "Starting cognee cassette on %s:%d (tapes: %s, dataset: %s)",

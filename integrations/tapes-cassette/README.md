@@ -10,21 +10,22 @@ knowledge graph and answers questions over them — and exposes both operations
 as MCP tools inside tapes, so agents can use their own session history as
 memory.
 
-## How it differs from the `tapes` exporter integration
+## Service or one-shot sync
 
-The [`integrations/tapes`](../tapes) exporter (PR #362) is a standalone CLI
-that *polls* tapes from the outside. This cassette integrates *inside* the
-tapes namespace instead:
+The package runs two ways, sharing one sync implementation (transcript rules,
+state file, checkpoint):
 
-| | Exporter (`integrations/tapes`) | Cassette (this package) |
+| | Cassette service | One-shot sync |
 |---|---|---|
-| Shape | One-shot CLI sync script | Long-running service, discovered by tapes |
-| API surface | None | `/v1/cassettes/cognee/...` (proxied by tapes) |
-| Agent access | None | MCP tools: `cognee.sync_sessions`, `cognee.sync_status`, `cognee.search_memory` |
-| Config | Env vars only | Env vars, declared in the `x-tapes-cassette` manifest |
-| Checkpoint source | `last_seen_at` from the **export payload** (location unverified) | `last_seen_at` from the **session list items** (confirmed field) |
+| Command | `cognee-tapes-cassette` | `cognee-tapes-sync` |
+| Shape | Long-running service, discovered by tapes | Runs one sync pass and exits (cron, scripts) |
+| API surface | `/v1/cassettes/cognee/...` (proxied by tapes) | None |
+| Agent access | MCP tools: `cognee.sync_sessions`, `cognee.sync_status`, `cognee.search_memory` | None |
+| Needs tapes to load a cassette | Yes (`cassette/v1alpha1`) | No, only the tapes core API |
 
-The transcript extraction rules are shared with the exporter: only completed
+The one-shot sync is for deployments where tapes doesn't load cassettes, or
+where a scheduled job is simpler than a service. Both use the transcript
+extraction rules from the original tapes exporter (#362): only completed
 sessions, only "main" LLM spans (no injected system context or
 harness-internal offshoots), thinking blocks dropped, tool calls summarized to
 a curated set of argument keys.
@@ -54,9 +55,9 @@ cognify next time).
 
 ## Incremental sync & the `last_seen_at` question
 
-The exporter PR left `last_seen_at`'s location in the `/export` payload
-unverified (every `/export` call 404'd during its development). This cassette
-sidesteps that entirely: the checkpoint is computed from `last_seen_at` on
+The original exporter (#362) read `last_seen_at` from the `/export` payload,
+whose location there was never verified (every `/export` call 404'd during its
+development). This package sidesteps that entirely: the checkpoint is computed from `last_seen_at` on
 `GET /v1/sessions` **list items**, which the list endpoint is known to return.
 Only completed sessions advance the checkpoint — an in-progress session's
 `last_seen_at` bumps again when it completes, so the next incremental run
@@ -64,13 +65,13 @@ picks it up.
 
 ## Setup
 
-Requires Python 3.10+, a running tapes instance, and an OpenAI API key for
-cognee's in-process embeddings/LLM calls.
+Requires Python 3.10+, a running tapes instance, and an LLM API key
+(`LLM_API_KEY`) for cognee's in-process LLM and embedding calls.
 
 ```bash
 cd integrations/tapes-cassette
 pip install -e .
-cp .env.example .env   # fill in OPENAI_API_KEY
+cp .env.example .env   # fill in LLM_API_KEY
 ```
 
 Run the cassette:
@@ -97,6 +98,30 @@ curl -X POST localhost:8081/v1/cassettes/cognee/api/search \
   -H 'content-type: application/json'
 ```
 
+## One-shot sync (cron)
+
+`cognee-tapes-sync` runs a single sync pass and exits, which suits cron or any
+scheduler:
+
+```bash
+cognee-tapes-sync            # incremental sync from the saved checkpoint
+cognee-tapes-sync --full     # ignore the checkpoint (unchanged sessions still skip)
+cognee-tapes-sync --json     # print the status snapshot as JSON
+```
+
+Exit codes: `0` completed, `1` failed, `2` busy (another sync holds the run
+lock). It reads the same settings as the service, from the environment or an
+`.env` file (`--env-file`, default `./.env`; real environment variables win).
+
+cron starts jobs in your home directory with a minimal environment, so use
+absolute paths and give the job the same `CASSETTE_STATE_PATH` as any running
+cassette. The state file and its run lock are what keep the two from ingesting
+the same sessions twice or syncing at once:
+
+```cron
+*/15 * * * * cd /opt/cognee-tapes && CASSETTE_STATE_PATH=/opt/cognee-tapes/state.json .venv/bin/cognee-tapes-sync --env-file /opt/cognee-tapes/.env >> /var/log/cognee-tapes-sync.log 2>&1
+```
+
 ## Configuration
 
 | Setting | Env var | Default |
@@ -106,11 +131,16 @@ curl -X POST localhost:8081/v1/cassettes/cognee/api/search \
 | Cassette listen host/port | `CASSETTE_HOST` / `CASSETTE_PORT` | `127.0.0.1` / `9900` |
 | Sync state file | `CASSETTE_STATE_PATH` | `.cognee-cassette-state-<dataset>.json` |
 | Forced cognee storage root | `COGNEE_STORAGE_ROOT` | unset (cognee defaults) |
-| Log level | `LOG_LEVEL` | `INFO` |
+| LLM API key (read by cognee) | `LLM_API_KEY` | unset |
+| Log level | `LOG_LEVEL` | `INFO` (service), `WARNING` (one-shot sync) |
 
 Set `COGNEE_STORAGE_ROOT` to keep the cassette's cognee data/system storage
 isolated under one directory — recommended if your shell exports global cognee
 storage variables.
+
+Both commands also load an `.env` file from the working directory (the
+one-shot sync takes `--env-file`); variables already set in the environment
+take precedence.
 
 The same settings are declared (with types and defaults) in the manifest's
 `x-tapes-cassette.config` block, so tapes can introspect them.
@@ -118,10 +148,11 @@ The same settings are declared (with types and defaults) in the manifest's
 ## Known limitations
 
 - **No authentication on tapes core API calls** — assumes a local, trusted
-  tapes deployment, same as the exporter.
-- **Single-process state** — sync state lives in a local JSON file guarded by
-  the server's single event loop; don't run two cassette instances against the
-  same state file.
+  tapes deployment.
+- **Local state** — sync state lives in a local JSON file. A run lock next to it
+  stops the service and the one-shot sync from syncing at once, but only when
+  they share the same `CASSETTE_STATE_PATH`; different state files mean
+  independent checkpoints and duplicate ingestion.
 - **`v1alpha1` is alpha** — the manifest/MCP conventions follow the spec as
   published in the cassette-anatomy post and may need updating as tapes
   evolves.

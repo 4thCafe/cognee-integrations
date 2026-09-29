@@ -24,6 +24,31 @@ class Config:
     storage_root: str | None
 
 
+def load_env_file(path: str | os.PathLike = ".env") -> None:
+    """Load ``KEY=VALUE`` lines into the environment; real env vars win.
+
+    cognee reads its own settings (``LLM_API_KEY`` …) from ``.env`` itself, but
+    the cassette's settings below come from ``os.environ`` only, so without this
+    a ``.env`` would configure cognee and silently not the cassette. Missing or
+    unreadable files are ignored.
+    """
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
 def load_config() -> Config:
     dataset_name = os.environ.get("COGNEE_TAPES_DATASET", DEFAULT_DATASET)
     return Config(
