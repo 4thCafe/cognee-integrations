@@ -41,9 +41,38 @@ def apply_storage_isolation(config: Config) -> None:
     logger.info("Cognee storage isolated under %s", root)
 
 
+@contextlib.contextmanager
+def _run_lock(path: Path):
+    """Non-blocking cross-process lock; yields whether it was acquired.
+
+    The in-process task guard stops overlapping runs inside one cassette; this
+    also stops the running service and a cron ``cognee-tapes-sync`` from
+    syncing against the same state file at once. The OS drops the lock when
+    the holder exits, so a crashed run never leaves it stuck.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")  # noqa: SIM115 — held for the whole run
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        handle.close()
+
+
 @dataclass
 class SyncStatus:
-    state: str = "idle"  # idle | running | completed | failed | cancelled
+    state: str = "idle"  # idle | running | completed | failed | cancelled | busy
     started_at: str | None = None
     finished_at: str | None = None
     fetched: int = 0
@@ -143,6 +172,22 @@ class Syncer:
             await task
 
     async def _run(self, full: bool = False) -> SyncStatus:
+        lock_path = self._config.state_path.with_name(self._config.state_path.name + ".lock")
+        with _run_lock(lock_path) as acquired:
+            if not acquired:
+                now = datetime.now(timezone.utc).isoformat()
+                self.status = SyncStatus(
+                    state="busy",
+                    started_at=now,
+                    finished_at=now,
+                    dataset=self._config.dataset_name,
+                    error=f"another sync process holds {lock_path}",
+                )
+                logger.info("Sync skipped: another process is syncing (%s).", lock_path)
+                return self.status
+            return await self._sync(full)
+
+    async def _sync(self, full: bool) -> SyncStatus:
         status = SyncStatus(
             state="running",
             started_at=datetime.now(timezone.utc).isoformat(),
