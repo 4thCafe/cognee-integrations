@@ -6,7 +6,7 @@ in every shell. This module makes that a one-time step: values placed in
 Claude Code and Codex plugins) are injected into ``os.environ`` at process
 start with **setdefault** semantics, so:
 
-  real exported env vars  >  ~/.cognee/.env  >  config.json  >  defaults
+  real exported env vars  >  ~/.cognee/.env  >  defaults
 
 Every existing ``os.environ.get(...)`` call site — and every child process the
 hooks spawn (the local cognee server, idle/exit watchers) — picks the values up
@@ -28,6 +28,8 @@ via ``config.load_config`` — see the same mode.
 Loading must never break a hook: any parse or IO problem results in the file
 being (partially) ignored, never an exception.
 """
+
+from __future__ import annotations
 
 import os
 import stat
@@ -69,9 +71,25 @@ _TEMPLATE = """\
 # COGNEE_API_KEY="ck_..."
 
 ## Local mode (default when COGNEE_BASE_URL is unset) — the plugin runs a
-## local Cognee API; only an LLM key is required:
+## local Cognee API. Give it an LLM key of your own:
 # LLM_API_KEY="sk-..."
 # LLM_MODEL="openai/gpt-4o-mini"
+## ...or leave LLM_API_KEY unset: with the `claude` CLI on PATH the Claude Code
+## plugin runs the server's LLM calls on your Claude subscription instead (the
+## "observer"; embeddings then run locally on fastembed). Claude Code only.
+## It spends your Claude usage limits, and a dataset built on fastembed cannot
+## be searched after switching to a key's embedder: switch datasets then.
+# COGNEE_LLM_OBSERVER="auto"     # auto | true | false
+# COGNEE_OBSERVER_MODEL="haiku"  # haiku | sonnet | opus | full model id
+
+## Local mode backends (optional) — the defaults (sqlite/lancedb/openai) need
+## nothing here. Configuring a provider below makes session start install the
+## matching cognee driver extra into the plugin venv automatically:
+# DB_PROVIDER="postgres"
+# VECTOR_DB_PROVIDER="pgvector"
+# GRAPH_DATABASE_PROVIDER="neo4j"
+# EMBEDDING_PROVIDER="fastembed"
+# LLM_PROVIDER="ollama"
 
 ## Optional:
 # COGNEE_PLUGIN_DATASET="agent_sessions"

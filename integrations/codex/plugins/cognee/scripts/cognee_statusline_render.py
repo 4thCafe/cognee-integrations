@@ -2,18 +2,19 @@
 """Render the Cognee status line (Codex).
 
 Invoked via ``cognee-statusline.sh``, which pipes a JSON context on stdin.
-Deliberately standalone and pure-local: reads only env vars and
-``~/.cognee-plugin/config.json`` — no network calls, no ``_plugin_common``
-import.
+Deliberately standalone and pure-local: reads only env vars
+(``~/.cognee/.env`` included) and the plugin's own state files — no network
+calls, no ``_plugin_common`` import.
 
 Output: ``cognee: <dataset-name> · local`` or ``cognee: <dataset-name> · cloud``
 """
+
+from __future__ import annotations
 
 import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,14 +27,8 @@ from _env_file import forced_backend, load_env_file
 load_env_file()
 
 _SHARED_ROOT = Path.home() / ".cognee-plugin"
-_CONFIG_PATH = _SHARED_ROOT / "config.json"
 _SERVER_READY_PATH = _SHARED_ROOT / "server-ready.json"
 _BREAKER_PATH = _SHARED_ROOT / "recall-breaker.json"
-# Written by the external pipeline-health sweep (see the claude-code renderer's
-# `_pipeline_health_glyph` and docs/KB/pipeline-monitor-notify-policy.md in the
-# total_recall/thessary repo). Machine-wide and integration-neutral — deliberately
-# in the shared root, NOT under codex/ — so both integrations read the same file.
-_PIPELINE_HEALTH_PATH = _SHARED_ROOT / "pipeline-health.json"
 _UPDATE_CHECK_PATH = _SHARED_ROOT / "codex" / "update-check.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "codex" / "llm-state.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
@@ -48,30 +43,101 @@ _CONN_STATE_DIR = _SHARED_ROOT / "codex" / "conn-state"
 _LLM_STATE_STALE_SECONDS = 30 * 60
 _CREDITS_PATH = _SHARED_ROOT / "codex" / "credits.json"
 
-# TTL for the credits balance. Written per turn (prompt + Stop hooks) and by
-# the idle watcher every ~5 minutes — older than this means every writer has
-# stopped (session over, watcher dead); hide the balance rather than show a
-# number that no longer reflects spend.
-_CREDITS_STALE_SECONDS = 15 * 60
+# Credits balance age. The marker is written only when this machine does
+# something billable (prompt start, turn end, remember, improve) — there is no
+# background poll, so an idle terminal makes no billing calls. The balance
+# cannot move from here while idle, so an old reading is still the right
+# number for this session; past this age it carries an "Nm ago" hint so the
+# user knows it predates the idle stretch. Hidden only once older than the
+# marker's own prune horizon (`_plugin_common._CREDITS_ENTRY_MAX_AGE_SECONDS`).
+_CREDITS_AGE_HINT_SECONDS = 15 * 60
+_CREDITS_MAX_AGE_SECONDS = 7 * 24 * 3600
+# A balance at or below this is "running out": the number turns red and the
+# top-up link appears. Not zero — the cloud stops serving before the balance
+# reaches zero (a 402 arrives with cents left), so zero is never observed.
+_CREDITS_LOW_USD = 1.0
+# Where to top up. Shown next to a low balance and next to a 402 refusal that
+# arrived without any balance reading. The production billing page, hardcoded:
+# the web frontend's host cannot be derived from the tenant's data-plane host
+# (``tenant-<id>.aws.cognee.ai`` pairs with ``platform.cognee.ai``, but
+# ``tenant-<id>.dev-aws.cognee.ai`` pairs with ``staging.cognee.ai`` — a lookup,
+# not a rule). Staging/dev sessions set ``COGNEE_BILLING_URL``.
+_BILLING_URL_DEFAULT = "https://platform.cognee.ai/billing"
 
-# TTL for the pipeline-health sweep's finding, matching the claude-code renderer.
-# The sweep runs every 2-5 minutes, so anything older means the sweep itself has
-# stopped — its own separate (unmonitored-by-this-glyph) problem, not something
-# to imply here; treat the file as stale/unknown rather than showing a possibly-
-# outdated warning.
-_PIPELINE_HEALTH_STALE_SECONDS = 30 * 60
+
+def _billing_url() -> str:
+    return os.environ.get("COGNEE_BILLING_URL", "").strip() or _BILLING_URL_DEFAULT
+
+
+def _payment_required_op(entry: dict) -> str:
+    """The operation the server last refused with HTTP 402, or "".
+
+    The hooks stamp ``payment_required: {op, at}`` on the tenant's entry when a
+    billable request comes back 402 and remove it on the next success. Stale
+    notes (older than the marker's prune horizon) are ignored: nothing has been
+    tried against this tenant for a week, so nothing is known about it.
+    """
+    note = entry.get("payment_required")
+    if not isinstance(note, dict):
+        return ""
+    op = str(note.get("op") or "").strip()
+    if not op:
+        return ""
+    try:
+        if time.time() - float(note.get("at", 0) or 0) > _CREDITS_MAX_AGE_SECONDS:
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return op
+
+
+def _credits_age_hint(age_seconds: float) -> str:
+    """``"16m ago"`` / ``"3h ago"`` / ``"2d ago"`` once a reading is older than
+    ``_CREDITS_AGE_HINT_SECONDS``; ``""`` while it is recent enough to read as
+    current. Coarse on purpose — it says "this number predates your idle
+    stretch", not a timestamp."""
+    if age_seconds <= _CREDITS_AGE_HINT_SECONDS:
+        return ""
+    minutes = int(age_seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
 _DEFAULT_DATASET = "agent_sessions"
 # Must match _plugin_common._DEFAULT_LOCAL_SERVICE_URL: the hooks stamp this URL into
 # the markers this renderer compares against.
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:8011"
 
 
-def _active_dataset() -> str:
-    # 1. env var (inherited from the shell that launched Codex)
+_SESSIONS_DIR = _SHARED_ROOT / "codex" / "sessions"
+
+
+def _launch_record(host_id: str) -> dict:
+    """This launch's record (``sessions/<host id>.json``), or {}.
+
+    The host session key handed to the renderer is the same key SessionStart
+    files the record under, so the bar reads the dataset the launch is actually
+    writing to — including one chosen with the ``cognee-switch-datasets`` skill.
+    """
+    if not _path_safe(host_id):
+        return {}
+    return _read_json(_SESSIONS_DIR / f"{host_id}.json")
+
+
+def _active_dataset(host_id: str = "") -> str:
+    # 1. the launch record (authoritative once SessionStart has run; switchable)
+    recorded = str(_launch_record(host_id).get("dataset") or "").strip()
+    if recorded:
+        return recorded
+    # 2. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
     if v:
         return v
-    # 2. default
+    # 3. default
     return _DEFAULT_DATASET
 
 
@@ -86,16 +152,7 @@ def _active_mode() -> str:
     forced = forced_backend()
     if forced == "local":
         return "local"
-    # 1. env var
     url = os.environ.get("COGNEE_BASE_URL", "").strip()
-    # 2. config file
-    if not url:
-        try:
-            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                url = str(data.get("base_url") or "").strip()
-        except Exception:
-            pass
     if not url:
         return "cloud" if forced == "cloud" else "local"
     return "local" if (urlparse(url).hostname or "") in _LOOPBACK else "cloud"
@@ -134,14 +191,6 @@ def _active_base_url() -> str:
         url = os.environ.get(var, "").strip()
         if url:
             return url.rstrip("/")
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            url = str(data.get("base_url") or "").strip()
-            if url:
-                return url.rstrip("/")
-    except Exception:
-        pass
     return _DEFAULT_LOCAL_BASE_URL
 
 
@@ -329,55 +378,6 @@ def _running_plugin_version() -> str:
     return ""
 
 
-def _pipeline_health_glyph() -> str:
-    """ "⚠ N pipeline(s) stuck " / "⚠ server-down " when the pipeline sweep has a
-    fresh, non-stale finding; "" otherwise (no file yet, stale, or everything's
-    clean). Codex copy of the claude-code renderer's glyph (kept in sync by hand —
-    this module is deliberately standalone); plain text since the status is
-    injected into model context, not a terminal bar. Passive and app-closed-safe:
-    it surfaces a stuck-pipeline finding the instant the user next prompts any
-    Codex session running the plugin. See docs/KB/pipeline-monitor-notify-policy.md
-    (total_recall/thessary repo) for the full monitoring design this is one small
-    piece of.
-    """
-    try:
-        raw = json.loads(_PIPELINE_HEALTH_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    if not isinstance(raw, dict):
-        return ""
-    try:
-        generated_at = datetime.fromisoformat(str(raw.get("generated_at", "")))
-        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-        if age_seconds > _PIPELINE_HEALTH_STALE_SECONDS:
-            return ""
-    except (ValueError, TypeError):
-        return ""
-    # isinstance, not `or {}`: a truthy non-dict ("yes", 5) would flow through
-    # an `or` fallback and raise AttributeError on .get() — and this module must
-    # never raise (see the sum() guard below).
-    server = raw.get("server") if isinstance(raw.get("server"), dict) else {}
-    if server.get("up") is False:
-        return "⚠ server-down "
-    summary = raw.get("summary") if isinstance(raw.get("summary"), dict) else {}
-    worst = str(summary.get("worst_classification") or "ok")
-    # The isinstance guard only vets the container; a non-numeric VALUE
-    # ("many", None, a nested dict) would make sum() raise — and this module
-    # must never raise (a crash here aborts the whole context-injection hook,
-    # silently dropping the turn's recalled memory, not just this glyph).
-    try:
-        flagged = (
-            sum((summary.get("by_classification") or {}).values())
-            if isinstance(summary.get("by_classification"), dict)
-            else 0
-        )
-    except (TypeError, ValueError):
-        flagged = 0
-    if worst in ("alert", "critical") and flagged > 0:
-        return f"⚠ {flagged} pipeline(s) stuck "
-    return ""
-
-
 def _llm_prefix(session_id: str = "") -> str:
     """Plain-text 'LLM key' failure glyph, or '' — local mode only.
 
@@ -428,19 +428,11 @@ def _llm_prefix(session_id: str = "") -> str:
 def _forced_cloud_unconfigured() -> bool:
     """Forced cloud (backend switch) with no URL anywhere: nothing to connect
     to — a definitive misconfiguration this renderer can see directly from
-    env + config.json, without waiting for a hook to record a failed attempt.
+    the environment, without waiting for a hook to record a failed attempt.
     """
     if forced_backend() != "cloud":
         return False
-    if os.environ.get("COGNEE_BASE_URL", "").strip():
-        return False
-    try:
-        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and str(data.get("base_url") or "").strip():
-            return False
-    except Exception:
-        pass
-    return True
+    return not os.environ.get("COGNEE_BASE_URL", "").strip()
 
 
 def _status_prefix(session_id: str = "") -> str:
@@ -471,8 +463,10 @@ def _credits_segment() -> str:
     by tenant id (several terminals can be on different tenants at once), each
     entry carrying the service base_url it was observed under. Select OUR
     tenant's entry by that binding. Plain text (the Codex line carries no ANSI
-    styling). Renders nothing unless ALL of: cloud mode, matching fresh entry
-    with a numeric balance, not opted out (``COGNEE_STATUSLINE_CREDITS=off``).
+    styling). Renders nothing unless ALL of: cloud mode, matching entry with a
+    numeric balance younger than ``_CREDITS_MAX_AGE_SECONDS``, not opted out
+    (``COGNEE_STATUSLINE_CREDITS=off``). A reading older than
+    ``_CREDITS_AGE_HINT_SECONDS`` renders with an ``(Nm ago)`` age hint.
     """
     if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
         "0",
@@ -497,30 +491,53 @@ def _credits_segment() -> str:
         return ""
     remaining = entry.get("remaining_usd")
     if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
-        return ""
-    try:
-        checked_at = float(entry.get("checked_at", 0) or 0)
-    except (TypeError, ValueError):
-        return ""
-    if time.time() - checked_at > _CREDITS_STALE_SECONDS:
-        return ""
+        remaining = None
+    age = 0.0
+    if remaining is not None:
+        try:
+            age = time.time() - float(entry.get("checked_at", 0) or 0)
+        except (TypeError, ValueError):
+            remaining = None
+        if age > _CREDITS_MAX_AGE_SECONDS:
+            remaining = None
+    refused_op = _payment_required_op(entry)
+    if remaining is None:
+        if not refused_op:
+            return ""
+        # The server refused to pay for an operation but there is no balance to
+        # show (the billing fetch itself failed): the refusal is the segment, and
+        # the way out is the same as for a low balance — top up.
+        return f" · credits: not enough for {refused_op}{_top_up_hint()}"
+    exhausted = remaining <= _CREDITS_LOW_USD
     sign = "-" if remaining < 0 else ""
     seg = f" · credits: {sign}${abs(remaining):,.2f}"
+    if refused_op and not exhausted:
+        seg += f" (not enough for {refused_op})"
     last_op = entry.get("last_op")
     if isinstance(last_op, dict):
         label = str(last_op.get("label") or "").strip()
         cost = last_op.get("cost_usd")
         if label and isinstance(cost, (int, float)) and not isinstance(cost, bool):
             seg += f" · last {label} ~${cost:,.2f}"
+    hint = _credits_age_hint(age)
+    if hint:
+        seg += f" ({hint})"
+    if exhausted:
+        seg += _top_up_hint()
     return seg
+
+
+def _top_up_hint() -> str:
+    """A plain URL: the host line carries no styling, and terminals linkify it."""
+    return f" · top up: {_billing_url()}"
 
 
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
     return (
-        f"{_pipeline_health_glyph()}{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_status_prefix(str(host_id or ''))}"
+        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 
@@ -540,13 +557,19 @@ def main() -> None:
         except Exception:
             pass
 
+    ctx: dict = {}
     try:
-        json.load(sys.stdin)  # consume stdin as required by the host
+        ctx = json.load(sys.stdin)  # consume stdin as required by the host
     except Exception:
-        pass
+        ctx = {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    # The host session id (when the context carries one) selects this launch's
+    # record, so the dataset shown follows a switch.
+    host_id = str(ctx.get("session_id") or ctx.get("thread_id") or "")
     sys.stdout.write(
-        f"{_pipeline_health_glyph()}{_status_prefix()}"
-        f"cognee: {_active_dataset()} · {_active_mode()}"
+        f"{_status_prefix()}"
+        f"cognee: {_active_dataset(host_id)} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 

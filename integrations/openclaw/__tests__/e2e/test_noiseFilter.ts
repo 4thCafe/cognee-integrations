@@ -159,6 +159,7 @@ describe("harness-noise filtering", () => {
     await emit("llm_output", { assistantTexts: ["we ship on Friday"] }, ctx);
     await flush();
 
+    // One graph-scope recall per prompt (the session layers ride in its text).
     expect(mockRecall).toHaveBeenCalledTimes(1);
     const qas = qaCalls();
     expect(qas).toHaveLength(1);
@@ -189,7 +190,7 @@ describe("harness-noise filtering", () => {
     await emit("llm_output", { assistantTexts: ["HEARTBEAT_OK"] }, ctx);
     await flush();
 
-    expect(mockRecall).toHaveBeenCalledTimes(1);
+    expect(mockRecall).toHaveBeenCalledTimes(1); // the single graph-scope recall
     expect(qaCalls()).toHaveLength(1);
   });
 
@@ -206,6 +207,6 @@ describe("harness-noise filtering", () => {
     // heartbeat runs in this configuration.
     await emit("before_prompt_build", { prompt: HEARTBEAT_PROMPT }, { ...ctx, sessionId: "s2" });
     await flush();
-    expect(mockRecall).toHaveBeenCalledTimes(1);
+    expect(mockRecall).toHaveBeenCalledTimes(1); // the single graph-scope recall
   });
 });
