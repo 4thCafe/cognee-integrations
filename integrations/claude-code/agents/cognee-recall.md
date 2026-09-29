@@ -1,6 +1,6 @@
 ---
 name: cognee-recall
-description: Searches Cognee memory (session cache and permanent knowledge graph) to retrieve relevant context. Can filter by data category (user, project, agent). Session memory is auto-searched on every prompt; use this agent for deeper or cross-session searches.
+description: Searches Cognee memory (the permanent knowledge graph, and an indexed repository's code graph) to retrieve relevant context. Can filter by data category (user, project, agent). Memory is auto-recalled on every prompt; use this agent for deeper or targeted searches.
 model: haiku
 maxTurns: 3
 ---
@@ -28,10 +28,10 @@ Cognee organizes knowledge into three categories:
 Run **one** broad search via the wrapper and answer from it. It queries the **running server** (`/api/v1/recall`, the source of truth), scoped to this session's **active dataset**, and falls back to `cognee-cli` only if the server is unreachable:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10
 ```
 
-**Do not fan out into many targeted calls.** One broad search plus the context the `UserPromptSubmit` hook already injects on every turn is enough — multiple calls just add latency and (un-allowlisted) permission prompts for the user. Use `--graph` or `--session` only when you specifically need to narrow scope.
+**Do not fan out into many targeted calls.** One broad search plus the context the `UserPromptSubmit` hook already injects on every turn is enough — multiple calls just add latency and (un-allowlisted) permission prompts for the user. Memory is read from the knowledge graph (and the code graph via `--code`) only; there is no session-cache search.
 
 **Manual ground-truth only (not part of the normal flow):** if a result is empty and you genuinely doubt it, you may confirm directly. Category filtering uses `node_name` (the CLI doesn't expose it):
 ```bash
@@ -55,7 +55,7 @@ query — other datasets the user can read may. You cannot ask the user yourself
 so list them and hand the choice back to the caller:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py --others
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others
 ```
 
 Return the dataset names **with their ids** and the exact follow-up command,
@@ -63,7 +63,7 @@ so the main agent can offer the picker and run the one-off graph search on the
 chosen dataset without switching:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh "<query>" 10 --graph --dataset-id <id>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <id>
 ```
 
 If the caller already named a dataset to search (`--dataset-id <id>` in the
@@ -71,7 +71,7 @@ request), run that command directly and label the results with the dataset.
 
 ## Output
 
-Parse the JSON results (`"_source": "session"` = current session; `"_source": "graph"` = permanent graph). Return a concise summary by relevance, noting the source.
+Parse the JSON results (`"source": "graph"` = permanent knowledge graph; on cognee 1.6.0 and later its `text` is the full prompt cognee would have answered from, history and retrieved context included; `"source": "code"` = code-graph facts). Return a concise summary by relevance, noting the source.
 
 If the **server** genuinely returns nothing, then suggest:
 - `/cognee-memory:cognee-sync` to sync session data to the permanent graph

@@ -30,7 +30,10 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import secrets
 from typing import Any
+
+_MINTED_KEY_PREFIXES = ("apikey", "agentkey", "ownerkey")
 
 
 def _b64url(raw: bytes) -> str:
@@ -56,11 +59,22 @@ class IdentityFake:
       - ``seed_owner_key``   -> GET /auth/api-keys returns it, POST mint skipped
       - ``invalidate_key``   -> GET /users/me answers 401 (re-bootstrap path)
       - ``reject_login``     -> POST /auth/login answers 401
+      - ``no_password_user`` -> POST /auth/login answers 400 "does not have a
+                              password" (cognee >= 1.6.0 default user created
+                              without DEFAULT_USER_PASSWORD)
+      - ``wrong_password``   -> POST /auth/login answers 400 LOGIN_BAD_CREDENTIALS
       - ``tenant_id``        -> surfaced in /agents/connections/me
     """
 
     def __init__(self) -> None:
         self._counter = itertools.count(1)
+        # Minted keys carry a per-server nonce. Detached plugin processes (the
+        # exit watcher, the deferred SessionEnd sync) can outlive the test that
+        # started them and reach the NEXT test's server on a fixed port (the
+        # local-mode e2e tests use 8011). With plain counters their cached key
+        # was valid again there, and a late sync created the principal's
+        # dataset before that test's shared-memory wiring ran. Now it is a 401.
+        self._key_nonce = secrets.token_hex(4)
         self.users: dict[str, dict[str, Any]] = {}  # email -> {password, id}
         self.jwt_to_email: dict[str, str] = {}
         self.user_api_keys: dict[str, list[dict[str, str]]] = {}  # email -> [{"key": k}]
@@ -89,6 +103,11 @@ class IdentityFake:
 
         # knobs
         self.reject_login = False
+        # cognee >= 1.6.0: a default user created while DEFAULT_USER_PASSWORD was
+        # unset has no password at all, and login answers 400 with this detail.
+        self.no_password_user = False
+        # A password that does not match the stored one (fastapi-users detail).
+        self.wrong_password = False
         self.tenant_id = "tenant-test"
         # False -> provision answers 404, like a server that predates plugin
         # provisioning; the client must stay on the principal key.
@@ -105,6 +124,26 @@ class IdentityFake:
     def _new_id(self, prefix: str) -> str:
         return f"{prefix}-{next(self._counter)}"
 
+    def _new_key(self, prefix: str) -> str:
+        """An API key unique to this server instance (see ``_key_nonce``)."""
+        return f"{prefix}-{self._key_nonce}-{next(self._counter)}"
+
+    def is_foreign_minted_key(self, api_key: str | None) -> bool:
+        """True for a key another fake server minted (an earlier test's).
+
+        Hand-written test keys never match the ``<prefix>-<nonce>-<n>`` shape,
+        so they keep their permissive treatment; only a stale minted key from a
+        detached process of an earlier test is recognised and refused.
+        """
+        parts = str(api_key or "").split("-")
+        return (
+            len(parts) == 3
+            and parts[0] in _MINTED_KEY_PREFIXES
+            and len(parts[1]) == 8
+            and parts[2].isdigit()
+            and parts[1] != self._key_nonce
+        )
+
     # -- seeding API (drive branches) -------------------------------------
     def seed_user(self, email: str, password: str = "default_password") -> None:
         self.users.setdefault(email, {"password": password, "id": self._new_id("user")})
@@ -113,7 +152,7 @@ class IdentityFake:
     def seed_owner_key(self, email: str, key: str | None = None) -> str:
         """Pre-create an owner API key so the GET /auth/api-keys reuse path runs."""
         self.seed_user(email)
-        key = key or self._new_id("ownerkey")
+        key = key or self._new_key("ownerkey")
         self.user_api_keys[email].append({"key": key})
         self.valid_keys[key] = {"owner": email, "valid": True}
         return key
@@ -133,6 +172,12 @@ class IdentityFake:
     def login(self, username: str, password: str) -> tuple[int, dict[str, Any]]:
         if self.reject_login:
             return 401, {"detail": "login rejected"}
+        if self.no_password_user:
+            return 400, {
+                "detail": "This user does not have a password. Use API key authentication."
+            }
+        if self.wrong_password:
+            return 400, {"detail": "LOGIN_BAD_CREDENTIALS"}
         self.seed_user(username, password)
         jwt = make_jwt(self.users[username]["id"])
         self.jwt_to_email[jwt] = username
@@ -146,7 +191,7 @@ class IdentityFake:
         email = self.jwt_to_email.get(auth_token or "")
         if not email:
             return 401, {"detail": "not authenticated"}
-        key = self._new_id("apikey")
+        key = self._new_key("apikey")
         self.user_api_keys.setdefault(email, []).append({"key": key})
         self.valid_keys[key] = {"owner": email, "valid": True}
         return 200, {"key": key}
@@ -219,7 +264,7 @@ class IdentityFake:
             self.parent_of[record["agent_id"]] = owner_id
             self.active_tenant[record["agent_id"]] = self.active_tenant.get(owner_id)
 
-        new_key = self._new_id("agentkey")
+        new_key = self._new_key("agentkey")
         self.valid_keys[new_key] = {"owner": record["agent_email"], "valid": True}
         for old_key in record["keys"]:
             self.invalidate_key(old_key)
@@ -306,6 +351,11 @@ class IdentityFake:
 
     def datasets_create(self, name: str, api_key: str | None = None) -> tuple[int, dict[str, Any]]:
         """POST /datasets as the key's user (the principal when no key is given)."""
+        if self.is_foreign_minted_key(api_key):
+            # A detached process left over from an earlier test, holding that
+            # test's minted key, must not create the principal's dataset here:
+            # it changed what this test's SessionStart saw (tenantless_with_data).
+            return 401, {"detail": "invalid api key"}
         owner = self.user_id_for_key(api_key) if api_key else self.principal_id
         owner = owner or self.principal_id
         new = not any(

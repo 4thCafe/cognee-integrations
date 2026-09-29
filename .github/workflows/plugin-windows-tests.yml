@@ -16,7 +16,7 @@ name: Plugin Windows Tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'
@@ -35,9 +35,10 @@ on:
 jobs:
   test-host-windows:
     runs-on: windows-latest
-    # Two hosts already take ~21 minutes: closed-port probes wait for Windows
-    # Firewall timeouts. Run hosts in parallel so adding a third stays bounded.
-    timeout-minutes: 30
+    # One host takes close to 30 minutes on its own: closed-port probes wait for
+    # Windows Firewall timeouts. Hosts run in parallel, and the ceiling leaves
+    # headroom so a slow runner is a slow run, not a cancelled one.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -45,22 +46,11 @@ jobs:
     env:
       COGNEE_TEST_SUITE: ${{ matrix.suite }}
     steps:
-      # The repo has deeply-nested committed artifacts (n8n_workflows LanceDB
-      # files) whose paths exceed Windows' MAX_PATH; sparse-checkout the trees
-      # this job needs and allow long paths so checkout cannot break.
-      - name: Allow long paths for checkout
-        run: git config --global core.longpaths true
-
+      # Full checkout with Git's default path limit, same as a user's clone. Do
+      # not enable core.longpaths or sparse-checkout here: that once hid paths
+      # that broke every Windows marketplace install (see plugin-clean-install.yml).
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          # integrations/tests holds the shared suite; the other three hold the
-          # hook scripts it imports and runs as subprocesses.
-          sparse-checkout: |
-            integrations/claude-code
-            integrations/codex
-            integrations/antigravity
-            integrations/tests
 
       - name: Set up Python
         uses: actions/setup-python@v5
