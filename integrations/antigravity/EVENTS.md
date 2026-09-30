@@ -10,6 +10,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
 | `clear-transcript-context:clear_context_skipped_stop_hook_active` | `transcript.skip_active` |
+| `config:dataset_name_sanitized` | `config.dataset_name_sanitized` |
 | `config:default_user_resolve_failed` | `config.default_user_resolve_failed` |
 | `config:git_branch_lookup_failed` | `config.git_branch_lookup_failed` |
 | `config:improve_local_unsupported` | `config.improve_local_unsupported` |
@@ -45,6 +46,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:auto_improve_error` | `auto.improve_error` |
 | `hook:auto_improve_fired` | `auto.improve_fired` |
 | `hook:auto_improve_throttled` | `auto.improve_throttled` |
+| `hook:base_url_changed_mid_session` | `endpoint.base_url_changed_mid_session` |
+| `hook:base_url_notice_failed` | `endpoint.base_url_notice_failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
 | `hook:bootstrap_failed` | `bootstrap.failed` |
@@ -84,6 +87,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_hit` | `recall.lookup_hit` |
 | `hook:context_lookup_missing_session_key` | `recall.lookup_missing_session_key` |
 | `hook:context_lookup_session_key` | `recall.lookup_session_key` |
+| `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
 | `hook:credits_fetch_empty` | `credits.fetch_empty` |
 | `hook:credits_fetch_failed` | `credits.fetch_failed` |
 | `hook:credits_marker_write_failed` | `credits.marker_write_failed` |
@@ -221,6 +225,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |
 | `hook:switch_sync_result` | `switch.sync_result` |
+| `hook:switch_sync_timeout` | `switch.sync_timeout` |
 | `hook:switch_watcher_restart_failed` | `switch.watcher_restart_failed` |
 | `hook:switch_watcher_restarted` | `switch.watcher_restarted` |
 | `hook:switch_watcher_stop_failed` | `switch.watcher_stop_failed` |
@@ -289,6 +294,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:llm_key_auth_failed` | `idle_watcher.llm_key_auth_failed` |
 | `idle-watcher:llm_key_check_error` | `idle_watcher.llm_key_check_error` |
 | `idle-watcher:llm_key_check_inconclusive` | `idle_watcher.llm_key_check_inconclusive` |
+| `idle-watcher:llm_key_check_skipped` | `idle_watcher.llm_key_check_skipped` |
 | `idle-watcher:llm_key_not_set` | `idle_watcher.llm_key_not_set` |
 | `idle-watcher:llm_key_ok` | `idle_watcher.llm_key_ok` |
 | `idle-watcher:pidfile_read_failed` | `idle_watcher.pidfile_read_failed` |

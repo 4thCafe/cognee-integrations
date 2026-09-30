@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -54,6 +55,20 @@ _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 
 
+# cognee rejects a dataset name containing a space or a dot (check_dataset_name,
+# run on every write). Only those are rewritten, so every name the server accepts
+# today comes back unchanged. Shared rule: integrations/conformance/dataset_name_cases.json.
+_DATASET_NAME_REJECTED_RE = re.compile(r"[ .]+")
+
+
+def _safe_dataset_name(name: str, fallback: str = DEFAULT_DATASET) -> str:
+    stripped = str(name or "").strip()
+    cleaned = _DATASET_NAME_REJECTED_RE.sub("_", stripped)
+    if not cleaned or (cleaned != stripped and not cleaned.strip("_")):
+        return fallback
+    return cleaned
+
+
 def _safe_session_component(value: str) -> str:
     # Sanitization kept consistent with the other integrations' session-id helpers
     # (claude-code/codex `_sanitize_session_key`, openclaw `sanitizeSessionKey`):
@@ -75,6 +90,8 @@ def _format_turn(user_content: str, assistant_content: str) -> str:
 def _coerce_result_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
+    if isinstance(value, str):
+        return {"text": value}
     if hasattr(value, "model_dump"):
         try:
             dumped = value.model_dump()
@@ -89,16 +106,49 @@ def _coerce_result_dict(value: Any) -> dict[str, Any]:
                 return dumped
         except Exception:
             pass
-    return {"text": str(value)}
+    # Not a dict, a string or a model: no readable fields. A ``text`` built from
+    # ``str(value)`` would be an object repr (with its memory address) shown to
+    # the agent as a memory (#457).
+    return {}
+
+
+#: Tag of the per-prompt memory block: one graph-scope ``only_context`` recall
+#: rendered verbatim (see ``CogneeMemoryProvider._run_layered_prefetch``).
+_MEMORY_LANE = "cognee_memory"
+
+
+def _readable(value: Any) -> str:
+    """A text slot's value as memory text, or "" when it holds none.
+
+    Only strings are memory: ``None``, ``0``, ``False``, ``{}`` and the like are
+    not. A list of strings is joined, so its content is kept without the list's
+    repr.
+    """
+    if isinstance(value, str):
+        return value if value.strip() else ""
+    if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+        joined = "\n".join(v for v in value if v.strip())
+        return joined
+    return ""
 
 
 def _result_text(value: Any) -> str:
+    """The first readable text slot of a recall item, or "" when it has none.
+
+    Keys are tried in order and empty or non-string values are skipped rather
+    than ending the search, so ``{"text": "", "answer": "real"}`` still yields
+    "real". An item with no readable text yields "" and is dropped by callers.
+    It used to fall back to ``str(value)``, which injected the whole response
+    envelope (or an error payload) as a memory and counted it as a hit (#457).
+    """
+    if isinstance(value, str):
+        return _readable(value)
     data = _coerce_result_dict(value)
     for key in ("answer", "text", "content", "chunk_text", "summary"):
-        found = data.get(key)
+        found = _readable(data.get(key))
         if found:
-            return str(found)
-    return str(value)
+            return found
+    return ""
 
 
 def _recall_failure_advice(exc: Exception) -> str:
@@ -117,7 +167,7 @@ def _recall_failure_advice(exc: Exception) -> str:
     return (
         " The default GRAPH_COMPLETION search runs an LLM per query and can be "
         "slow on local models — retry with search_type='CHUNKS' (fast raw-text "
-        "retrieval) or scope='session', or raise COGNEE_RECALL_TIMEOUT."
+        "retrieval), or raise COGNEE_RECALL_TIMEOUT."
     )
 
 
@@ -172,7 +222,6 @@ class CogneeMemoryProvider(MemoryProvider):
         self._turns_seen = 0
         self._turns_with_hits = 0
         self._hits_total = 0
-        self._cross_hits_total = 0
 
     @property
     def name(self) -> str:
@@ -313,7 +362,14 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = kwargs.get("hermes_home")
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
-        self._default_dataset = str(self._config.get("dataset") or DEFAULT_DATASET)
+        configured = str(self._config.get("dataset") or DEFAULT_DATASET)
+        self._default_dataset = _safe_dataset_name(configured)
+        if self._default_dataset != configured.strip():
+            logger.warning(
+                "cognee: dataset name %r is not valid for cognee; using %r",
+                configured,
+                self._default_dataset,
+            )
         self._dataset = self._default_dataset
         self._top_k = int(self._config.get("top_k") or 5)
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
@@ -531,37 +587,9 @@ class CogneeMemoryProvider(MemoryProvider):
         # than any bounded join would still write after the clear.
         generation = self._prefetch_generation
 
-        def _run() -> None:
-            if str_to_bool(self._config.get("recall_session_layers"), True):
-                self._run_layered_prefetch(query, cognee_session_id, generation)
-                return
-            try:
-                results = self._recall(
-                    query,
-                    scope="auto",
-                    search_type=None,
-                    top_k=min(self._top_k, 5),
-                    session_id=cognee_session_id,
-                )
-                lines = self._format_recall_lines(results, limit=5)
-                rendered = "\n".join(lines)
-                with self._prefetch_lock:
-                    self._turns_seen += 1
-                    if lines:
-                        self._hits_total += len(lines)
-                        self._turns_with_hits += 1
-                        rendered = self._hit_header(len(lines), 0) + rendered
-                        # Drop the result if a reset invalidated it mid-recall.
-                        if generation == self._prefetch_generation:
-                            self._prefetch_result = rendered
-                # The backend answered, so this is a success either way.
-                self._record_success()
-            except Exception as exc:
-                self._record_failure()
-                logger.debug("Cognee prefetch failed: %s", exc)
-
         self._prefetch_thread = threading.Thread(
-            target=_run,
+            target=self._run_layered_prefetch,
+            args=(query, cognee_session_id, generation),
             daemon=True,
             name="cognee-hermes-prefetch",
         )
@@ -744,7 +772,6 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._turns_seen = 0
                 self._turns_with_hits = 0
                 self._hits_total = 0
-                self._cross_hits_total = 0
 
     def on_memory_write(
         self,
@@ -855,53 +882,33 @@ class CogneeMemoryProvider(MemoryProvider):
         """A named, bounded timeout read from config at call time."""
         return float(self._config.get(key, default))
 
-    def _recall_scope_params(
-        self, scope: str, search_type: Any, session_id: str
-    ) -> tuple[Optional[str], Optional[list[str]], Optional[str], str]:
-        """Map the tool's ``scope`` onto the backend's explicit targets.
-
-        ``session`` searches only this conversation's cache, ``graph`` only the
-        permanent dataset, ``auto`` both. A ``search_type`` override is
-        meaningless for a pure session lookup, so it is dropped there.
-
-        The normalized scope name is returned alongside the targets so a
-        transport can pass the decision on rather than re-derive it. An
-        unrecognized name resolves to ``auto`` here rather than travelling
-        onward, so the backend is never handed a scope the server would reject.
-        """
-        normalized = (scope or "auto").lower()
-        if normalized == "session":
-            if str_to_bool(self._config.get("recall_session_layers"), True):
-                # The session corpus is three server scopes, not one: cached Q&A
-                # turns, tool-call trace lessons, and distilled agent guidance.
-                # Same scope list openclaw's memory_search corpus=sessions sends.
-                return session_id, [self._dataset], None, ["session", "trace", "session_context"]
-            return session_id, None, None, normalized
-        query_type = search_type or None
-        if normalized == "graph":
-            return None, [self._dataset], query_type, normalized
-        return session_id, [self._dataset], query_type, "auto"
-
     def _recall(
         self,
         query: str,
         *,
-        scope: str,
         search_type: Any,
         top_k: int,
         session_id: str,
     ) -> list[Any]:
-        target_session, datasets, query_type, resolved_scope = self._recall_scope_params(
-            scope, search_type, session_id
-        )
+        """The explicit ``cognee_recall`` search: the knowledge graph, stated outright.
+
+        Memory is read from the graph only. The session cache (the server's
+        ``session``, ``trace`` and ``session_context`` scopes) and the ``auto``
+        scope that folds it in are never requested — those entries are noise
+        next to the cognified graph. The session id still travels: on cognee
+        >= 1.6.0 the graph item's prompt then carries this conversation's
+        history, and an explicit graph scope never returns raw session entries.
+        ``search_type`` is the caller's override or None for the query
+        classifier.
+        """
         return self._backend.recall(
             query=query,
-            session_id=target_session,
-            datasets=datasets,
+            session_id=session_id,
+            datasets=[self._dataset],
             top_k=top_k,
             auto_route=self._auto_route,
-            query_type=query_type,
-            scope=resolved_scope,
+            query_type=search_type or None,
+            scope=["graph"],
             timeout=self._timeout("recall_timeout", 120),
         )
 
@@ -915,7 +922,7 @@ class CogneeMemoryProvider(MemoryProvider):
 
     # -- layered per-prompt recall -------------------------------------------
 
-    def _hit_header(self, hits: int, cross: int) -> str:
+    def _hit_header(self, hits: int) -> str:
         """One plain-words line on what memory just contributed, or "".
 
         Must be called under ``_prefetch_lock`` after the counters were updated:
@@ -924,8 +931,6 @@ class CogneeMemoryProvider(MemoryProvider):
         if not str_to_bool(self._config.get("memory_hits"), True):
             return ""
         line = f"{hits} memory hit{'s' if hits != 1 else ''} this turn"
-        if cross:
-            line += f" ({cross} beyond this session)"
         line += f" · {self._turns_with_hits}/{self._turns_seen} turns had hits this session"
         return line + "\n"
 
@@ -968,28 +973,32 @@ class CogneeMemoryProvider(MemoryProvider):
         return scope == ["graph"] and getattr(exc, "status", None) == 404
 
     def _run_layered_prefetch(self, query: str, session_id: str, generation: int) -> None:
-        """Fan recall out over the memory layers, all lanes at once.
+        """One memory request per prompt, plus the code lane when it is armed.
 
-        With ``dataset_ids`` + ``search_type`` in a single request the server's
-        ``auto`` scope resolves graph-only, so cached Q&A turns, trace lessons
-        and distilled agent guidance never reached the prompt. One bounded call
-        per scope instead, each rendered as its own labelled block; a failure in
-        one lane never discards the others. The lanes are dispatched
-        concurrently with one shared deadline, so the prefetch costs the slowest
-        lane (graph) rather than the sum — sequentially, every cheap lane was a
-        full round trip on top of the graph search, and the code lane could burn
-        seconds before graph even started.
+        The memory lane is a single graph-scope ``HYBRID_COMPLETION`` recall
+        with ``only_context`` and this conversation's ``session_id``. On cognee
+        >= 1.6.0 that returns one graph item per dataset whose ``text`` is the
+        full LLM input the completion would have received: the session's
+        conversation history, the question with the retrieved context rendered
+        through the retriever's user template, and the session guidance block.
+        The server builds the history and guidance layers from ``session_id``,
+        so it must always travel; without it the item is bare context. Older
+        servers return the bare retrieval context in ``text``, and the LLM is
+        never called on either. The separate ``system_prompt`` field (the
+        retriever's task template) is deliberately not read.
+
+        That one item replaces the earlier per-scope fan-out (session cache,
+        trace lessons, agent guidance as three more requests). The code lane
+        stays separate: it is a deterministic ``code_query`` against a
+        different dataset. Lanes still share one deadline and are dispatched
+        together; a failure in one never discards the other.
         """
         budget = self._config.get("recall_budget")
         deadline = time.monotonic() + (20.0 if budget is None else float(budget))
         recall_timeout = self._timeout("recall_timeout", 120)
         top_k = min(self._top_k, 5)
 
-        lanes: list[tuple[str, dict[str, Any], bool]] = [
-            ("session_memory", {"scope": ["session"]}, False),
-            ("trace_lessons", {"scope": ["trace"]}, False),
-            ("agent_guidance", {"scope": ["session_context"], "context_profile": "agent"}, True),
-        ]
+        lanes: list[tuple[str, dict[str, Any]]] = []
         code_lane = self._code_lane(query)
         if code_lane:
             lanes.append(
@@ -1000,14 +1009,12 @@ class CogneeMemoryProvider(MemoryProvider):
                         "datasets": [code_lane["dataset"]],
                         "code_query": code_lane["code_query"],
                     },
-                    True,
                 )
             )
         # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; with
-        # only_context the LLM completion is skipped server-side either way.
-        lanes.append(
-            ("graph_memory", {"scope": ["graph"], "query_type": "HYBRID_COMPLETION"}, True)
-        )
+        # only_context the LLM completion is skipped server-side and the item's
+        # text is the prompt that completion would have read.
+        lanes.append((_MEMORY_LANE, {"scope": ["graph"], "query_type": "HYBRID_COMPLETION"}))
 
         # Same deadline for every lane: min(per-call timeout, budget left).
         # Below the floor a call cannot return anything useful, so nothing is
@@ -1028,7 +1035,6 @@ class CogneeMemoryProvider(MemoryProvider):
                     auto_route=True,
                     query_type=spec.get("query_type"),
                     scope=spec["scope"],
-                    context_profile=spec.get("context_profile"),
                     code_query=spec.get("code_query"),
                     only_context=True,
                     timeout=lane_timeout,
@@ -1046,16 +1052,15 @@ class CogneeMemoryProvider(MemoryProvider):
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=len(lanes), thread_name_prefix="cognee-recall-lane"
             ) as pool:
-                outcomes = list(pool.map(_run_lane, [spec for _label, spec, _cross in lanes]))
+                outcomes = list(pool.map(_run_lane, [spec for _label, spec in lanes]))
 
         blocks: list[str] = []
         hits = 0
-        cross = 0
         answered = False
         hard_failures = 0
         # Fold the lanes in canonical order so the rendered blocks read the same
         # whichever request answered first.
-        for (label, spec, is_cross), (results, exc) in zip(lanes, outcomes):
+        for (label, spec), (results, exc) in zip(lanes, outcomes):
             if exc is not None:
                 if self._is_graph_not_built(exc, spec["scope"]):
                     answered = True
@@ -1064,12 +1069,13 @@ class CogneeMemoryProvider(MemoryProvider):
                 logger.debug("Cognee recall lane %s failed: %s", label, exc)
                 continue
             answered = True
-            lines = self._format_recall_lines(results, limit=top_k)
+            if label == _MEMORY_LANE:
+                lines = self._memory_lane_texts(results)
+            else:
+                lines = self._format_recall_lines(results, limit=top_k)
             if not lines:
                 continue
             hits += len(lines)
-            if is_cross:
-                cross += len(lines)
             blocks.append(f"<{label}>\n" + "\n".join(lines) + f"\n</{label}>")
 
         # One verdict per turn, not per lane: a single dead server must not
@@ -1085,28 +1091,33 @@ class CogneeMemoryProvider(MemoryProvider):
             if blocks:
                 self._turns_with_hits += 1
                 self._hits_total += hits
-                self._cross_hits_total += cross
                 if generation == self._prefetch_generation:
-                    self._prefetch_result = self._hit_header(hits, cross) + "\n\n".join(blocks)
+                    self._prefetch_result = self._hit_header(hits) + "\n\n".join(blocks)
 
     def _handle_recall(self, args: dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
         if not query:
             return json.dumps({"error": "Missing required parameter: query"})
         top_k = min(max(1, int(args.get("top_k") or self._top_k)), 20)
-        scope = str(args.get("scope") or "auto")
+        # A ``scope`` argument from an older tool schema is ignored: every
+        # explicit recall targets the graph (see ``_recall``).
         search_type = args.get("search_type")
 
         try:
             results = self._recall(
                 query,
-                scope=scope,
                 search_type=search_type,
                 top_k=top_k,
                 session_id=self._session_cognee_id,
             )
             self._record_success()
-            items = [self._normalize_recall_item(item) for item in results]
+            # Items with no readable text are not memories: dropping them keeps
+            # an all-empty response a clean miss instead of empty "hits" (#457).
+            items = [
+                normalized
+                for normalized in (self._normalize_recall_item(item) for item in results)
+                if normalized["text"].strip()
+            ]
             overflow = self._backend.overflow_hint()
             if not items:
                 # Distinguish a genuine miss from a backend condition that makes
@@ -1377,6 +1388,13 @@ class CogneeMemoryProvider(MemoryProvider):
             target = str(args.get("dataset") or "").strip()
             if not target:
                 return json.dumps({"error": "action='switch' requires a dataset name."})
+            # Refused rather than rewritten, so a switch never lands in a dataset
+            # the user did not name.
+            suggestion = _safe_dataset_name(target, fallback="")
+            if suggestion != target:
+                hint = f" Try {suggestion!r}." if suggestion else ""
+                error = f"Invalid dataset name {target!r}: cognee rejects spaces and dots."
+                return json.dumps({"error": error + hint})
             return self._switch_dataset(target, force=force)
         if action == "reset":
             return self._switch_dataset(self._default_dataset, force=force)
@@ -1576,6 +1594,27 @@ class CogneeMemoryProvider(MemoryProvider):
             if data.get(key) is not None:
                 normalized[key] = data[key]
         return normalized
+
+    def _memory_lane_texts(self, results: list[Any]) -> list[str]:
+        """Each graph item's ``text`` verbatim — that string *is* the memory.
+
+        On cognee >= 1.6.0 an ``only_context`` completion item is the whole
+        LLM input: history first, retrieved context in the middle, guidance at
+        the end. Truncating or bulleting it would cut exactly what memory is
+        for, so nothing is parsed, stripped or shortened. ``system_prompt`` is
+        never read. Older servers put the bare context in ``text``, which
+        passes through the same way.
+        """
+        texts = []
+        for item in results:
+            data = _coerce_result_dict(item)
+            # The text slot is used only when it holds real text; otherwise the
+            # ordered fallback runs, and an item with nothing readable is
+            # dropped instead of stringified into the block (#457).
+            text = _readable(data.get("text")).strip() or _result_text(item).strip()
+            if text:
+                texts.append(text)
+        return texts
 
     def _format_recall_lines(self, results: list[Any], *, limit: int) -> list[str]:
         lines = []

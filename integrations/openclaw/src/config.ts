@@ -1,4 +1,5 @@
 import type { CogneeMode, CogneePluginConfig, CogneeSearchType, MemoryScope, ScopeRoute } from "./types.js";
+import { sanitizeDatasetName } from "./scope.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -104,7 +105,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
 
   const mode: CogneeMode = raw.mode === "cloud" || process.env.COGNEE_MODE === "cloud" ? "cloud" : "local";
   const baseUrl = raw.baseUrl?.trim() || process.env.COGNEE_BASE_URL?.trim() || DEFAULT_BASE_URL;
-  const datasetName = process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME;
+  const datasetName = sanitizeDatasetName(
+    process.env.COGNEE_PLUGIN_DATASET?.trim() || raw.datasetName?.trim() || DEFAULT_DATASET_NAME,
+    DEFAULT_DATASET_NAME,
+  );
   const searchType = raw.searchType || DEFAULT_SEARCH_TYPE;
   const searchPrompt = raw.searchPrompt || "";
   const deleteMode = raw.deleteMode === "hard" ? "hard" : DEFAULT_DELETE_MODE;
@@ -118,6 +122,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  // Opt-in: the server's form default (4096 tokens) can exceed the embedding
+  // model's input limit, but a smaller size costs more LLM passes, so it is the
+  // user's call (#428). Anything but a positive integer means "send nothing".
+  const chunkSize = Number.isInteger(raw.chunkSize) && (raw.chunkSize as number) > 0 ? (raw.chunkSize as number) : 0;
   const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : DEFAULT_RECALL_TIMEOUT_MS;
   const recallBudgetMs = typeof raw.recallBudgetMs === "number" ? raw.recallBudgetMs : DEFAULT_RECALL_BUDGET_MS;
   const recallBreakerThreshold = typeof raw.recallBreakerThreshold === "number" ? raw.recallBreakerThreshold : DEFAULT_RECALL_BREAKER_THRESHOLD;
@@ -198,7 +206,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
-    requestTimeoutMs, ingestionTimeoutMs,
+    requestTimeoutMs, ingestionTimeoutMs, chunkSize,
     recallTimeoutMs, recallBudgetMs, recallBreakerThreshold, recallBreakerCooldownMs,
   };
 }

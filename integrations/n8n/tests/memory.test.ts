@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { IDataObject, IExecuteSingleFunctions, IHttpRequestOptions, INodeExecutionData } from 'n8n-workflow';
 
@@ -9,6 +10,11 @@ import {
   parseCognifyGraphModel,
   simplifyRecallOutput,
 } from '../nodes/Cognee/Cognee.node';
+
+/** The content-addressed upload name buildTextIngestionParts gives `text`. */
+function hashedName(prefix: string, text: string): string {
+  return `${prefix}-${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)}.txt`;
+}
 
 function fakeContext(
   params: Record<string, unknown>,
@@ -34,7 +40,7 @@ async function parseMultipart(options: IHttpRequestOptions): Promise<FormData> {
 }
 
 describe('buildRememberBody', () => {
-  it('uploads text items as memory-N.txt with dataset and optional fields', async () => {
+  it('uploads text items as memory-<hash>.txt with dataset and optional fields', async () => {
     const ctx = fakeContext({
       rememberInputType: 'text',
       rememberText: ['Einstein was born in Ulm.', 'He moved to Bern.'],
@@ -49,7 +55,10 @@ describe('buildRememberBody', () => {
     });
     const form = await parseMultipart(await buildRememberBody.call(ctx, { url: '/v1/remember' }));
     const files = form.getAll('data') as File[];
-    expect(files.map((f) => f.name)).toEqual(['memory-1.txt', 'memory-2.txt']);
+    expect(files.map((f) => f.name)).toEqual([
+      hashedName('memory', 'Einstein was born in Ulm.'),
+      hashedName('memory', 'He moved to Bern.'),
+    ]);
     expect(await files[0].text()).toBe('Einstein was born in Ulm.');
     expect(form.get('datasetName')).toBe('facts');
     expect(form.get('session_id')).toBe('chat-1');
@@ -69,7 +78,7 @@ describe('buildRememberBody', () => {
     const form = await parseMultipart(await buildRememberBody.call(ctx, { url: '/v1/remember' }));
     expect(form.get('datasetId')).toBe('d-1');
     expect(form.has('datasetName')).toBe(false);
-    expect((form.get('data') as File).name).toBe('note-1.txt');
+    expect((form.get('data') as File).name).toBe(hashedName('note', 'single'));
   });
 
   it('uploads the input binary property with its file name and mime type', async () => {

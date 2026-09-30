@@ -1,7 +1,13 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { IExecuteSingleFunctions, IHttpRequestOptions } from 'n8n-workflow';
 
 import { buildAddDataBody } from '../nodes/Cognee/Cognee.node';
+
+/** The content-addressed upload name buildTextIngestionParts gives `text`. */
+function hashedName(prefix: string, text: string): string {
+  return `${prefix}-${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)}.txt`;
+}
 
 function fakeContext(params: Record<string, unknown>): IExecuteSingleFunctions {
   return {
@@ -38,7 +44,10 @@ describe('buildAddDataBody', () => {
     expect(form.has('node_set')).toBe(false);
     expect(form.has('run_in_background')).toBe(false);
     const files = form.getAll('data') as File[];
-    expect(files.map((f) => f.name)).toEqual(['text-1.txt', 'text-2.txt']);
+    expect(files.map((f) => f.name)).toEqual([
+      hashedName('text', 'FAQ: reset password'),
+      hashedName('text', 'Guide: export CSV'),
+    ]);
     expect(await files[1].text()).toBe('Guide: export CSV');
   });
 

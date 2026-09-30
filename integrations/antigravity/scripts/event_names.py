@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 
 EVENT_NAMES = {
+    "hook:base_url_changed_mid_session": "endpoint.base_url_changed_mid_session",
+    "hook:base_url_notice_failed": "endpoint.base_url_notice_failed",
+    "hook:switch_sync_timeout": "switch.sync_timeout",
     "hook:sync_worker_detached": "lifecycle.sync_worker_detached",
     "hook:sync_execution_skipped_not_idle": "lifecycle.sync_execution_skipped_not_idle",
     "hook:sync_deferred_to_execution_worker": "lifecycle.sync_deferred_to_execution_worker",
@@ -38,6 +41,7 @@ EVENT_NAMES = {
     "clear-transcript-context:clear_context_failed": "transcript.failed",
     "clear-transcript-context:clear_context_invalid_payload": "transcript.invalid_payload",
     "clear-transcript-context:clear_context_skipped_stop_hook_active": "transcript.skip_active",
+    "config:dataset_name_sanitized": "config.dataset_name_sanitized",
     "config:default_user_resolve_failed": "config.default_user_resolve_failed",
     "config:git_branch_lookup_failed": "config.git_branch_lookup_failed",
     "config:improve_local_unsupported": "config.improve_local_unsupported",
@@ -112,6 +116,7 @@ EVENT_NAMES = {
     "hook:context_lookup_hit": "recall.lookup_hit",
     "hook:context_lookup_missing_session_key": "recall.lookup_missing_session_key",
     "hook:context_lookup_session_key": "recall.lookup_session_key",
+    "hook:context_lookup_short_prompt": "recall.lookup_short_prompt",
     "hook:credits_fetch_empty": "credits.fetch_empty",
     "hook:credits_fetch_failed": "credits.fetch_failed",
     "hook:credits_marker_write_failed": "credits.marker_write_failed",
@@ -317,6 +322,7 @@ EVENT_NAMES = {
     "idle-watcher:llm_key_auth_failed": "idle_watcher.llm_key_auth_failed",
     "idle-watcher:llm_key_check_error": "idle_watcher.llm_key_check_error",
     "idle-watcher:llm_key_check_inconclusive": "idle_watcher.llm_key_check_inconclusive",
+    "idle-watcher:llm_key_check_skipped": "idle_watcher.llm_key_check_skipped",
     "idle-watcher:llm_key_not_set": "idle_watcher.llm_key_not_set",
     "idle-watcher:llm_key_ok": "idle_watcher.llm_key_ok",
     "idle-watcher:pidfile_read_failed": "idle_watcher.pidfile_read_failed",
