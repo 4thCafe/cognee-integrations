@@ -21,6 +21,15 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   sends nothing, and the server default applies as before. Files updated in place
   still use the server default, because `/update` takes no chunk size.
 
+### Changed
+- **Bundled cognee is 1.6.1** (was 1.6.0; `COGNEE_VERSION` in `src/server.ts`, and
+  `cognee-docker-compose.yaml` runs `cognee/cognee:1.6.1`). The shared
+  `~/.cognee-plugin/venv` is upgraded on the next cold boot, which runs that
+  release's migrations. 1.6.1 is a patch release: chunks carry their document's
+  external metadata into hybrid retrieval, provenance is scoped to the caller's
+  readable datasets, and `dlt` is now a core dependency, which the venv install
+  pulls in on its own. The claude-code and codex plugins move to the same pin.
+
 ### Fixed
 - **Documented settings no longer get the plugin quarantined**
   ([#438](https://github.com/topoteretes/cognee-integrations/issues/438)).

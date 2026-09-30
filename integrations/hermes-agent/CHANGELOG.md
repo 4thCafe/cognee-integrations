@@ -12,6 +12,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.3.1]
 
+### Changed
+- **Pinned cognee is 1.6.1** (was 1.6.0) in `pyproject.toml`, both `plugin.yaml`
+  files and `uv.lock`. A server the plugin starts itself is upgraded on the next
+  boot, which runs that release's migrations. 1.6.1 is a patch release: chunks
+  carry their document's external metadata into hybrid retrieval, provenance is
+  scoped to the caller's readable datasets, and `dlt` is now a core dependency,
+  installed with the package.
+
 ### Fixed
 - **Dataset names are sanitized for cognee.** cognee rejects a dataset name
   containing a space or a dot; a configured `dataset` like `my project` now has

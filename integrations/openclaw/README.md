@@ -489,7 +489,7 @@ Move **one conversation** to another Cognee dataset — the OpenClaw counterpart
 
 In multi-scope mode only the **agent** scope is repointed; `company`/`user` memory stays shared. Memory-file sync keeps following `scopeRouting` — the switch moves the conversation's memory, not the agent's files. Overrides persist across gateway restarts in `~/.openclaw/memory/cognee/dataset-overrides.json`. Set `datasetSwitchTool: false` to not register it.
 
-The plugin's bundled server pin is `cognee==1.6.0` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.0`. This matches the claude-code/codex/antigravity plugins, which share the same `~/.cognee-plugin/venv`.
+The plugin's bundled server pin is `cognee==1.6.1` (`src/server.ts`; the venv is upgraded automatically on next boot) and `cognee-docker-compose.yaml` uses `cognee/cognee:1.6.1`. This matches the claude-code/codex/antigravity plugins, which share the same `~/.cognee-plugin/venv`.
 
 ### Memory-hit visibility
 
