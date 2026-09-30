@@ -10,6 +10,34 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(plugin_logger_handler)
 
+NO_PASSWORD_MARKER = "does not have a password"
+BAD_CREDENTIALS_MARKER = "LOGIN_BAD_CREDENTIALS"
+
+
+def login_error_message(status_code: int, body: str) -> str:
+    """Turn a failed ``POST /api/v1/auth/login`` response into an actionable message.
+
+    Cognee 1.6+ only gives the default user a password when the server is started
+    with ``DEFAULT_USER_PASSWORD``; logging in to a password-less account returns
+    HTTP 400 with a distinct detail, which is not a wrong-password situation.
+    """
+    if status_code == 400:
+        if NO_PASSWORD_MARKER in body:
+            return (
+                "This Cognee user has no password. Start the Cognee server with "
+                "DEFAULT_USER_PASSWORD (and DEFAULT_USER_EMAIL) set to the same values "
+                "as the User Password and User Email configured here, then retry. "
+                "The bundled docker-compose.yml already does this."
+            )
+        if BAD_CREDENTIALS_MARKER in body:
+            return (
+                "Invalid email or password. Check your Cognee server credentials "
+                "(the defaults are default_user@example.com / default_password, "
+                "matching DEFAULT_USER_EMAIL / DEFAULT_USER_PASSWORD on the server)."
+            )
+        return "Invalid email or password. Check your Cognee server credentials."
+    return f"Cognee login failed with status {status_code}: {body}"
+
 
 class CogneeSdkProvider(ToolProvider):
     def _validate_credentials(self, credentials: dict[str, Any]) -> None:
@@ -67,12 +95,8 @@ class CogneeSdkProvider(ToolProvider):
                     "Login succeeded but no access token was returned"
                 )
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 400:
-                raise ToolProviderCredentialValidationError(
-                    "Invalid email or password. Check your Cognee server credentials."
-                )
             raise ToolProviderCredentialValidationError(
-                f"Cognee login failed with status {e.response.status_code}: {e.response.text}"
+                login_error_message(e.response.status_code, e.response.text)
             )
         except ToolProviderCredentialValidationError:
             raise

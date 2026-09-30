@@ -1,7 +1,7 @@
 ## Cognee (Self-Hosted)
 
 **Author:** topoteretes
-**Version:** 0.0.1
+**Version:** 0.0.2
 **Type:** tool
 
 ### Description
@@ -10,7 +10,7 @@ Cognee (Self-Hosted) is a Dify tool plugin that connects to a **self-hosted Cogn
 
 This plugin is designed for users running Cognee on their own infrastructure. For the cloud-hosted version, see the [Cognee (Cloud) plugin](https://github.com/topoteretes/cognee-integrations/tree/main/integrations/dify).
 
-**Tested with Cognee v0.5.5.** Other versions may have different API endpoints — verify compatibility before using a different version.
+**Tested with Cognee v1.6.1.** Other versions may have different API endpoints — verify compatibility before using a different version. Cognee 1.6 requires the server to be started with `DEFAULT_USER_PASSWORD` for the default user to be able to log in; see [Prerequisites](#prerequisites).
 
 ### Tools
 
@@ -46,12 +46,12 @@ Search the Cognee memory for relevant information.
 - **Query** (required) — Natural language search query.
 - **Datasets** (optional) — Comma-separated list of dataset names to search.
 - **Dataset IDs** (optional) — Comma-separated list of dataset UUIDs to search.
-- **Search Type** (required, default: `GRAPH_COMPLETION`) — The search strategy. Options: `GRAPH_COMPLETION`, `GRAPH_COMPLETION_COT`, `GRAPH_COMPLETION_CONTEXT_EXTENSION`, `GRAPH_SUMMARY_COMPLETION`, `RAG_COMPLETION`, `TRIPLET_COMPLETION`, `SUMMARIES`, `CHUNKS`, `CHUNKS_LEXICAL`, `CYPHER`, `NATURAL_LANGUAGE`, `TEMPORAL`, `FEELING_LUCKY`, `CODING_RULES`
+- **Search Type** (required, default: `GRAPH_COMPLETION`) — The search strategy. Options: `GRAPH_COMPLETION`, `HYBRID_COMPLETION`, `GRAPH_COMPLETION_DECOMPOSITION`, `GRAPH_COMPLETION_COT`, `GRAPH_COMPLETION_CONTEXT_EXTENSION`, `GRAPH_SUMMARY_COMPLETION`, `GRAPH_REPORT`, `RAG_COMPLETION`, `TRIPLET_COMPLETION`, `SUMMARIES`, `CHUNKS`, `CHUNKS_LEXICAL`, `CYPHER`, `NATURAL_LANGUAGE`, `TEMPORAL`, `FEELING_LUCKY`, `CODING_RULES`
 - **System Prompt** (optional) — System prompt for Completion-type searches.
 - **Top K** (optional, default: 10) — Maximum number of results to return.
-- **Only Context** (optional, default: false) — Return raw context instead of LLM-generated completion.
+- **Only Context** (optional, default: false) — Skip the LLM and return what it would have received. For completion search types this is the full user prompt (question plus retrieved context); retrieval-only types return their context.
 
-**Outputs:** `results_count`, `results_text`
+**Outputs:** `results_count`, `results_text`. `results_text` lists one entry per searched dataset, prefixed with the dataset name; the raw JSON response is also emitted.
 
 #### Update Data
 
@@ -96,23 +96,36 @@ Delete a specific data item from a dataset.
 
 ### Prerequisites
 
-A running Cognee v0.5.5 server accessible from your Dify plugin. There are two ways to run it:
+A running Cognee v1.6.1 server accessible from your Dify plugin. There are two ways to run it:
+
+> **Cognee 1.6 and the default user:** since 1.6 the server only gives the default user a password when it is started with `DEFAULT_USER_PASSWORD` set. Without it, the plugin's login fails with *"This user has no password"*. Both options below set it. Existing installs keep whatever password the default user already has; the server never rewrites it.
 
 #### Option A: Docker (recommended)
+
+The ready-made file lives in [`docker/docker-compose.yml`](docker/docker-compose.yml):
 
 ```yaml
 # docker-compose.yml
 services:
   cognee:
-    image: cognee/cognee:0.5.5
+    image: cognee/cognee:1.6.1
     container_name: cognee-local
     ports:
       - "8000:8000"
     environment:
       - HOST=0.0.0.0
       - ENVIRONMENT=local
+      # Must match the User Email / User Password configured in the plugin.
+      - DEFAULT_USER_EMAIL=default_user@example.com
+      - DEFAULT_USER_PASSWORD=default_password
     volumes:
       - .env:/app/.env
+      # Persist databases and raw files across restarts.
+      - cognee_system:/cognee-storage/system
+      - cognee_data:/cognee-storage/data
+volumes:
+  cognee_system:
+  cognee_data:
 ```
 
 Create a `.env` file alongside it (**never commit this file**):
@@ -129,20 +142,23 @@ curl http://localhost:8000/health  # Should return HTTP 200
 #### Option B: pip install
 
 ```bash
-pip install cognee==0.5.5
+pip install cognee==1.6.1
 ```
 
-Start the Cognee API server (set the LLM key for this shell session only):
+Start the Cognee API server (set the LLM key and the default-user password for this shell session only):
 
 ```bash
-LLM_API_KEY=sk-your-openai-key-here python -m cognee.api.client
+LLM_API_KEY=sk-your-openai-key-here \
+DEFAULT_USER_EMAIL=default_user@example.com \
+DEFAULT_USER_PASSWORD=default_password \
+python -m cognee.api.client
 ```
 
 The server starts on `http://localhost:8000`. Verify with `curl http://localhost:8000/health`.
 
 > **Note:** The pip method requires you to manage your own Python environment and dependencies. Docker is simpler for most users.
 
-Default credentials for both methods: `default_user@example.com` / `default_password`.
+Default credentials for both methods: `default_user@example.com` / `default_password`. To use a different account, set `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` on the server to the values you configure in the plugin.
 
 ---
 
@@ -228,6 +244,8 @@ In the Dify plugins page, find **Cognee (Self-Hosted)** and click configure:
 > **Important:** Since the plugin runs on your host machine (not inside Docker), use `localhost`. If you were running the plugin inside Docker too, you'd use `host.docker.internal`.
 
 Click **Save**. The plugin validates by performing a health check and logging in.
+
+> **"This Cognee user has no password":** the server was started without `DEFAULT_USER_PASSWORD` (see [Prerequisites](#prerequisites)). Restart it with `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` set to the values entered here.
 
 > **Long-running operations:** Cognify and Update can take long on large datasets. This plugin sets generous timeouts, but Dify itself has its own limits (`PLUGIN_DAEMON_TIMEOUT`, `GUNICORN_TIMEOUT`, etc. in Dify's `docker/.env`). Increase those if operations time out.
 

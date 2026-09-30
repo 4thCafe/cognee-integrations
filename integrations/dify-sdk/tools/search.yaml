@@ -72,7 +72,7 @@ parameters:
       zh_Hans: "要执行的搜索类型"
       pt_BR: "O tipo de pesquisa a ser realizada"
       ja_JP: "実行する検索タイプ"
-    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
+    llm_description: "The search strategy: GRAPH_COMPLETION uses the knowledge graph, HYBRID_COMPLETION combines passages and graph entities, GRAPH_COMPLETION_COT uses chain-of-thought reasoning, RAG_COMPLETION uses retrieval-augmented generation"
     form: form
     default: "GRAPH_COMPLETION"
     options:
@@ -82,6 +82,18 @@ parameters:
           zh_Hans: "图谱补全"
           pt_BR: "Completude do Grafo"
           ja_JP: "グラフ補完"
+      - value: "HYBRID_COMPLETION"
+        label:
+          en_US: "Hybrid Completion"
+          zh_Hans: "混合补全"
+          pt_BR: "Completude Híbrida"
+          ja_JP: "ハイブリッド補完"
+      - value: "GRAPH_COMPLETION_DECOMPOSITION"
+        label:
+          en_US: "Graph Completion (Query Decomposition)"
+          zh_Hans: "图谱补全（查询分解）"
+          pt_BR: "Completude do Grafo (Decomposição da Consulta)"
+          ja_JP: "グラフ補完（クエリ分解）"
       - value: "GRAPH_COMPLETION_COT"
         label:
           en_US: "Graph Completion (Chain of Thought)"
@@ -100,6 +112,12 @@ parameters:
           zh_Hans: "图谱摘要补全"
           pt_BR: "Completude de Resumo do Grafo"
           ja_JP: "グラフサマリー補完"
+      - value: "GRAPH_REPORT"
+        label:
+          en_US: "Graph Report"
+          zh_Hans: "图谱报告"
+          pt_BR: "Relatório do Grafo"
+          ja_JP: "グラフレポート"
       - value: "RAG_COMPLETION"
         label:
           en_US: "RAG Completion"
@@ -203,11 +221,11 @@ parameters:
       pt_BR: "Apenas Contexto"
       ja_JP: "コンテキストのみ"
     human_description:
-      en_US: "Return only the raw context instead of LLM-generated completion"
-      zh_Hans: "仅返回原始上下文而非 LLM 生成的补全结果"
-      pt_BR: "Retornar apenas o contexto bruto em vez da completude gerada pelo LLM"
-      ja_JP: "LLM による補完ではなく生のコンテキストのみを返す"
-    llm_description: "Set to true to return only the raw context Cognee sends to the LLM, instead of the LLM completion response"
+      en_US: "Return what the LLM would have received instead of its answer. For completion search types this is the full user prompt (question plus retrieved context); retrieval-only types return their context. No LLM call is made."
+      zh_Hans: "返回 LLM 本应接收的内容而非其回答。对于补全类搜索，这是完整的用户提示（问题加检索到的上下文）；仅检索类搜索返回其上下文。不会调用 LLM。"
+      pt_BR: "Retorna o que o LLM teria recebido em vez da resposta. Para pesquisas do tipo Completion é o prompt completo do usuário (pergunta mais contexto recuperado); tipos somente de recuperação retornam seu contexto. Nenhuma chamada ao LLM é feita."
+      ja_JP: "LLM の回答ではなく、LLM が受け取るはずだった内容を返します。Completion タイプの検索では完全なユーザープロンプト（質問と取得したコンテキスト）、取得専用タイプではそのコンテキストを返します。LLM は呼び出されません。"
+    llm_description: "Set to true to skip the LLM and return what it would have received: for completion search types the full user prompt (question plus retrieved context), for retrieval-only types their context"
     form: form
     options:
       - value: "false"

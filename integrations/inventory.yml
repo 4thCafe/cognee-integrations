@@ -113,9 +113,9 @@ integrations:
     registry: dify-marketplace
     package_name: "cognee-sdk"
     cognee_dependency: http-api
-    current_version: "0.0.1"
+    current_version: "0.0.2"
     migration_status: done
-    notes: "Dify tool plugin for local/self-hosted Cognee – targets cognee OSS server API"
+    notes: "Dify tool plugin for local/self-hosted Cognee – targets cognee OSS server API (tested with cognee 1.6.1)"
 
   - slug: google-adk
     name: "Cognee Integration for Google ADK"
