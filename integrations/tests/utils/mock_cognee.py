@@ -214,6 +214,7 @@ class MockCogneeServer:
             elif "multipart/form-data" in ctype:
                 entry["form"] = dict(req.form)
                 entry["files"] = list(req.files.keys())
+                entry["filenames"] = [f.filename for f in req.files.values()]
             elif "application/x-www-form-urlencoded" in ctype:
                 entry["form"] = dict(req.form)
         except Exception:  # pragma: no cover - defensive

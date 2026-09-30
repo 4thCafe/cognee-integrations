@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { IExecuteSingleFunctions, IHttpRequestOptions } from 'n8n-workflow';
 import { NodeConnectionTypes } from 'n8n-workflow';
@@ -161,7 +162,13 @@ describe('parameter routing', () => {
 		}).formData();
 		expect(form.get('datasetName')).toBe('docs');
 		const files = form.getAll('data') as File[];
-		expect(files.map((file) => file.name)).toEqual(['text-1.txt', 'text-2.txt']);
+		// Named by content: cognee >= 1.6.0 refuses a known upload name with new content.
+		expect(files.map((file) => file.name)).toEqual(
+			['first', 'second'].map(
+				(text) =>
+					`text-${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)}.txt`,
+			),
+		);
 		expect(await Promise.all(files.map((file) => file.text()))).toEqual(['first', 'second']);
 	});
 

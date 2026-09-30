@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,11 @@ import {
   isMultipartFile,
   multipartContentType,
 } from '../nodes/Cognee/multipart';
+
+/** The content-addressed upload name buildTextIngestionParts gives `text`. */
+function hashedName(prefix: string, text: string): string {
+  return `${prefix}-${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)}.txt`;
+}
 
 /** Parse an encoded body with Node's built-in multipart parser (undici). */
 async function parse(body: Buffer, boundary: string): Promise<FormData> {
@@ -117,13 +123,27 @@ describe('encodeMultipart', () => {
 });
 
 describe('buildTextIngestionParts', () => {
+  it('names each text by its content, not its position', () => {
+    // cognee >= 1.6.0 refuses (409) a known upload name with new content, so
+    // positional names failed on every run after the first.
+    const names = (texts: string[]) =>
+      buildTextIngestionParts({ texts, datasetName: 'docs' })
+        .filter(isMultipartFile)
+        .map((f) => f.filename);
+    const [first] = names(['first']);
+    const [second] = names(['second']);
+    expect(first).toMatch(/^text-[0-9a-f]{32}\.txt$/);
+    expect(first).not.toBe(second);
+    expect(names(['first'])).toEqual([first]);
+  });
+
   it('creates one file part per non-empty text and a datasetName field', () => {
     const parts = buildTextIngestionParts({
       texts: ['first', '', '   ', 'second'],
       datasetName: 'docs',
     });
     const files = parts.filter(isMultipartFile);
-    expect(files.map((f) => f.filename)).toEqual(['text-1.txt', 'text-2.txt']);
+    expect(files.map((f) => f.filename)).toEqual([hashedName('text', 'first'), hashedName('text', 'second')]);
     expect(files.map((f) => f.data.toString())).toEqual(['first', 'second']);
     expect(parts.filter((p) => !isMultipartFile(p))).toEqual([
       { name: 'datasetName', value: 'docs' },
@@ -139,7 +159,7 @@ describe('buildTextIngestionParts', () => {
       runInBackground: true,
       filenamePrefix: 'memory',
     });
-    expect(parts.filter(isMultipartFile)[0].filename).toBe('memory-1.txt');
+    expect(parts.filter(isMultipartFile)[0].filename).toBe(hashedName('memory', 't'));
     expect(parts.filter((p) => !isMultipartFile(p))).toEqual([
       { name: 'datasetId', value: '11111111-2222-3333-4444-555555555555' },
       { name: 'node_set', value: 'agent-a' },

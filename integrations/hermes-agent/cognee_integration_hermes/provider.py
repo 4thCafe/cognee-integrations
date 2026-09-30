@@ -90,6 +90,8 @@ def _format_turn(user_content: str, assistant_content: str) -> str:
 def _coerce_result_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
+    if isinstance(value, str):
+        return {"text": value}
     if hasattr(value, "model_dump"):
         try:
             dumped = value.model_dump()
@@ -104,7 +106,10 @@ def _coerce_result_dict(value: Any) -> dict[str, Any]:
                 return dumped
         except Exception:
             pass
-    return {"text": str(value)}
+    # Not a dict, a string or a model: no readable fields. A ``text`` built from
+    # ``str(value)`` would be an object repr (with its memory address) shown to
+    # the agent as a memory (#457).
+    return {}
 
 
 #: Tag of the per-prompt memory block: one graph-scope ``only_context`` recall
@@ -112,13 +117,38 @@ def _coerce_result_dict(value: Any) -> dict[str, Any]:
 _MEMORY_LANE = "cognee_memory"
 
 
+def _readable(value: Any) -> str:
+    """A text slot's value as memory text, or "" when it holds none.
+
+    Only strings are memory: ``None``, ``0``, ``False``, ``{}`` and the like are
+    not. A list of strings is joined, so its content is kept without the list's
+    repr.
+    """
+    if isinstance(value, str):
+        return value if value.strip() else ""
+    if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+        joined = "\n".join(v for v in value if v.strip())
+        return joined
+    return ""
+
+
 def _result_text(value: Any) -> str:
+    """The first readable text slot of a recall item, or "" when it has none.
+
+    Keys are tried in order and empty or non-string values are skipped rather
+    than ending the search, so ``{"text": "", "answer": "real"}`` still yields
+    "real". An item with no readable text yields "" and is dropped by callers.
+    It used to fall back to ``str(value)``, which injected the whole response
+    envelope (or an error payload) as a memory and counted it as a hit (#457).
+    """
+    if isinstance(value, str):
+        return _readable(value)
     data = _coerce_result_dict(value)
     for key in ("answer", "text", "content", "chunk_text", "summary"):
-        found = data.get(key)
+        found = _readable(data.get(key))
         if found:
-            return str(found)
-    return str(value)
+            return found
+    return ""
 
 
 def _recall_failure_advice(exc: Exception) -> str:
@@ -1081,7 +1111,13 @@ class CogneeMemoryProvider(MemoryProvider):
                 session_id=self._session_cognee_id,
             )
             self._record_success()
-            items = [self._normalize_recall_item(item) for item in results]
+            # Items with no readable text are not memories: dropping them keeps
+            # an all-empty response a clean miss instead of empty "hits" (#457).
+            items = [
+                normalized
+                for normalized in (self._normalize_recall_item(item) for item in results)
+                if normalized["text"].strip()
+            ]
             overflow = self._backend.overflow_hint()
             if not items:
                 # Distinguish a genuine miss from a backend condition that makes
@@ -1572,8 +1608,10 @@ class CogneeMemoryProvider(MemoryProvider):
         texts = []
         for item in results:
             data = _coerce_result_dict(item)
-            text = data.get("text")
-            text = str(text).strip() if text else _result_text(item).strip()
+            # The text slot is used only when it holds real text; otherwise the
+            # ordered fallback runs, and an item with nothing readable is
+            # dropped instead of stringified into the block (#457).
+            text = _readable(data.get("text")).strip() or _result_text(item).strip()
             if text:
                 texts.append(text)
         return texts

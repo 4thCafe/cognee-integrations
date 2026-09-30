@@ -380,6 +380,20 @@ describe("memory verbs send what the server expects", () => {
     expect(body).toContain('name="content_type"');
   });
 
+  it("remember sends chunk_size only when chunkSize is set (#428)", async () => {
+    // The server's form default is 4096 tokens, which can exceed the embedding
+    // model's input limit; unset must still leave that default alone.
+    const files = [{ filePath: "MEMORY.md", data: "hello" }];
+    await localClient().remember({ files, datasetName: "ds", chunkSize: 1200 });
+    const body = mock.assertCalled("POST", "/remember").body;
+    expect(body).toContain('name="chunk_size"');
+    expect(body).toMatch(/name="chunk_size"\r\n\r\n1200\r\n/);
+
+    mock.reset();
+    await localClient().remember({ files, datasetName: "ds" });
+    expect(mock.assertCalled("POST", "/remember").body).not.toContain('name="chunk_size"');
+  });
+
   it("health reads the status field", async () => {
     await expect(localClient().health()).resolves.toEqual({ status: "ok" });
   });

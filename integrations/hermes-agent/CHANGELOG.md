@@ -21,6 +21,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a dot in their name are now dot-free and can be indexed. Shared rule:
   `integrations/conformance/dataset_name_cases.json`. First implemented by
   @eiza763 (#226).
+- **Permanent writes are no longer rejected as duplicate documents on cognee
+  1.6.0.** Every permanent write uploaded its text as `memory.txt`, and 1.6.0
+  introduced a document-identity rule — `add()` answers **HTTP 409** when a name
+  already exists in the dataset with different content — so the first write to a
+  dataset succeeded and every later one was refused and lost. The upload is now
+  named after the content hash, which keeps a fresh name per text and keeps the
+  server's documented no-op for identical content. Contributed by @firefloc
+  (#431).
+- **Recall items with no text are no longer injected as memories.** When a recall
+  item carried no readable text (an empty completion, `text: null`, an error
+  payload such as `{'error': 'Unauthorized', 'status': 401}`), hermes fell back to
+  the item's `str()` and injected the whole response envelope into the prompt as
+  a memory, untruncated, and counted it as a hit, so the hit numbers looked
+  healthy while nothing useful arrived. Only string text counts now: empty and
+  non-string slots are skipped in the usual key order (`answer`, `text`,
+  `content`, `chunk_text`, `summary`), items with nothing readable are dropped
+  from the per-prompt block and the `cognee_recall` tool, and an unconvertible
+  object no longer turns into its repr. Reported by @Diddykonga (#457).
 
 ## [1.3.0]
 
