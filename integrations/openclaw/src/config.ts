@@ -122,6 +122,10 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
   const improveOnSessionEnd = typeof raw.improveOnSessionEnd === "boolean" ? raw.improveOnSessionEnd : DEFAULT_IMPROVE_ON_SESSION_END;
   const requestTimeoutMs = typeof raw.requestTimeoutMs === "number" ? raw.requestTimeoutMs : DEFAULT_REQUEST_TIMEOUT_MS;
   const ingestionTimeoutMs = typeof raw.ingestionTimeoutMs === "number" ? raw.ingestionTimeoutMs : DEFAULT_INGESTION_TIMEOUT_MS;
+  // Opt-in: the server's form default (4096 tokens) can exceed the embedding
+  // model's input limit, but a smaller size costs more LLM passes, so it is the
+  // user's call (#428). Anything but a positive integer means "send nothing".
+  const chunkSize = Number.isInteger(raw.chunkSize) && (raw.chunkSize as number) > 0 ? (raw.chunkSize as number) : 0;
   const recallTimeoutMs = typeof raw.recallTimeoutMs === "number" ? raw.recallTimeoutMs : DEFAULT_RECALL_TIMEOUT_MS;
   const recallBudgetMs = typeof raw.recallBudgetMs === "number" ? raw.recallBudgetMs : DEFAULT_RECALL_BUDGET_MS;
   const recallBreakerThreshold = typeof raw.recallBreakerThreshold === "number" ? raw.recallBreakerThreshold : DEFAULT_RECALL_BREAKER_THRESHOLD;
@@ -202,7 +206,7 @@ export function resolveConfig(rawConfig: unknown): Required<CogneePluginConfig> 
     searchType, searchPrompt, deleteMode,
     maxResults, minScore, maxTokens,
     autoRecall, autoIndex, autoCognify, autoMemify, improveOnSessionEnd,
-    requestTimeoutMs, ingestionTimeoutMs,
+    requestTimeoutMs, ingestionTimeoutMs, chunkSize,
     recallTimeoutMs, recallBudgetMs, recallBreakerThreshold, recallBreakerCooldownMs,
   };
 }

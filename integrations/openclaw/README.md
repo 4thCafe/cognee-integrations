@@ -552,6 +552,7 @@ OpenClaw drives agents with synthetic prompts the user never typed: heartbeat pr
 |--------|------|---------|-------------|
 | `requestTimeoutMs` | number | `120000` | HTTP timeout for Cognee requests |
 | `ingestionTimeoutMs` | number | `300000` | HTTP timeout for add/update requests |
+| `chunkSize` | integer | unset | Maximum tokens per chunk when syncing memory files, sent as `chunk_size`. Unset keeps the server default (4096 tokens), which can exceed an embedding model's input limit (e.g. 1500 for `bge-m3`): oversized chunks are truncated or retrieve poorly. Smaller chunks mean more LLM passes when the graph is built. Applies to new files; a file updated in place is re-chunked at the server default, since `/update` takes no chunk size |
 
 ### Recall budget & circuit breaker
 

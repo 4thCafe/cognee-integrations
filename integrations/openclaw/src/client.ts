@@ -299,6 +299,7 @@ export class CogneeHttpClient {
     runInBackground?: boolean;
     customPrompt?: string;
     chunksPerBatch?: number;
+    chunkSize?: number;
   }): Promise<{
     datasetId: string;
     datasetName: string;
@@ -326,6 +327,9 @@ export class CogneeHttpClient {
     if (params.customPrompt) formData.append("custom_prompt", params.customPrompt);
     if (typeof params.chunksPerBatch === "number") {
       formData.append("chunks_per_batch", String(params.chunksPerBatch));
+    }
+    if (typeof params.chunkSize === "number" && params.chunkSize > 0) {
+      formData.append("chunk_size", String(params.chunkSize));
     }
     if (params.nodeSet && params.nodeSet.length > 0) {
       for (const node of params.nodeSet) formData.append("node_set", node);

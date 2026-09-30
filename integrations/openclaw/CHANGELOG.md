@@ -13,7 +13,23 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
 ## [Unreleased]
 
+### Added
+- **`chunkSize` setting** ([#428](https://github.com/topoteretes/cognee-integrations/issues/428)).
+  File sync never sent `chunk_size`, so the server chunked every memory file at its
+  form default of 4096 tokens, above the input limit of embedding models such as
+  `bge-m3` (1500). Set `chunkSize` to send it on `/remember`. It is opt-in: unset
+  sends nothing, and the server default applies as before. Files updated in place
+  still use the server default, because `/update` takes no chunk size.
+
 ### Fixed
+- **Documented settings no longer get the plugin quarantined**
+  ([#438](https://github.com/topoteretes/cognee-integrations/issues/438)).
+  `perAgentMemory`, `noiseTriggers` and `noisePatterns` are documented and read by
+  the plugin, but were missing from `configSchema` in `openclaw.plugin.json`, which
+  rejects unknown keys. Setting any of them failed OpenClaw's config validation,
+  and `openclaw doctor` quarantined the whole plugin config, disabling the plugin.
+  Per-agent memory could not be turned on at all. All three are now declared, and
+  a test keeps the schema in step with the settings `config.ts` reads.
 - **Dataset names are sanitized for cognee.** cognee rejects a dataset name
   containing a space or a dot. The configured `datasetName` and every scope's
   derived name (company, user, agent — an email user id carries dots) now have

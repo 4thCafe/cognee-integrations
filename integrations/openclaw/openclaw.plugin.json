@@ -82,6 +82,10 @@
         "type": "string",
         "description": "Template for the per-agent dataset name with '{agentId}' placeholder (e.g. '{agentId}' for bare id, 'memory-{agentId}' for prefixed). Takes precedence over agentDatasetPrefix when set. Enables multi-scope mode."
       },
+      "perAgentMemory": {
+        "type": "boolean",
+        "description": "Give each agent its own dataset. Strictly opt-in; only takes effect together with agentDatasetPrefix or agentDatasetTemplate (default: false)"
+      },
       "userId": {
         "type": "string",
         "description": "User identifier for user-scoped memory (or set OPENCLAW_USER_ID env var)"
@@ -251,6 +255,20 @@
         "type": "boolean",
         "description": "Once per 7 days, append a digest to the agent's next reply with turns-with-hits, total turns and top memory sources. Suppressed when the week had zero hits (default: true)"
       },
+      "noiseTriggers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "ctx.trigger values treated as harness turns, excluded from auto-recall and capture. [] disables this layer (default: [\"heartbeat\", \"cron\"])"
+      },
+      "noisePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Regexes matched against the prompt (leading whitespace stripped) to catch harness templates; matching prompts are excluded from auto-recall and capture. Replaces the defaults when set; [] disables this layer"
+      },
       "autoIndex": {
         "type": "boolean",
         "description": "Auto-sync memory files to Cognee on plugin startup (default: true)"
@@ -286,6 +304,11 @@
       "ingestionTimeoutMs": {
         "type": "number",
         "description": "HTTP timeout in milliseconds for add/update (ingestion) requests (default: 300000 = 5 min)"
+      },
+      "chunkSize": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Maximum tokens per chunk when syncing memory files, sent to Cognee as chunk_size. Keep it under your embedding model's input limit. Unset: the server default (4096). Not applied to files updated in place"
       },
       "searchPrompt": {
         "type": "string",
@@ -327,6 +350,9 @@
     "agentDatasetPrefix": {
       "label": "Agent Dataset Prefix",
       "placeholder": "my-project-agent"
+    },
+    "perAgentMemory": {
+      "label": "Per-Agent Memory"
     },
     "userId": {
       "label": "User ID",
@@ -419,6 +445,12 @@
     "weeklyDigest": {
       "label": "Weekly Digest"
     },
+    "noiseTriggers": {
+      "label": "Noise Triggers"
+    },
+    "noisePatterns": {
+      "label": "Noise Patterns"
+    },
     "autoIndex": {
       "label": "Auto-Index on Startup"
     },
@@ -435,6 +467,10 @@
     "ingestionTimeoutMs": {
       "label": "Ingestion Timeout (ms)",
       "placeholder": "300000"
+    },
+    "chunkSize": {
+      "label": "Chunk Size (tokens)",
+      "placeholder": "1200"
     },
     "recallTimeoutMs": {
       "label": "Recall Timeout (ms)",
