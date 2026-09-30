@@ -22,6 +22,11 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   code-graph datasets for repositories with a dot in their name are now dot-free.
   Shared rule: `integrations/conformance/dataset_name_cases.json`. First
   implemented by @eiza763 (#226).
+- **The exit watcher's API key is no longer visible to other local users.** It
+  was passed in the watcher's command-line arguments, which any local user can
+  read with `ps` or `/proc/<pid>/cmdline` for as long as the watcher runs. It now
+  travels in the watcher's environment (`COGNEE_API_KEY`), matching the earlier
+  fix for the Claude Code and Codex plugins (#395). Contributed by @pinzo (#425).
 
 ## [2026.9.22]
 

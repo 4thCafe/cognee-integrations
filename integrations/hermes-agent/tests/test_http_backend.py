@@ -323,6 +323,8 @@ class TestRememberWireFormat(unittest.TestCase):
         first = self._remember_filename("a fact")
         self.assertEqual(self._remember_filename("a fact"), first)
         self.assertNotEqual(self._remember_filename("another fact"), first)
+        # 32 hex chars (128 bits), the same length every other integration uses.
+        self.assertRegex(first, r"^memory-[0-9a-f]{32}\.txt$")
 
 
 class TestImproveWireFormat(unittest.TestCase):

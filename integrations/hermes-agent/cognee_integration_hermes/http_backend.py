@@ -688,7 +688,10 @@ class HttpBackend(MemoryBackend):
         # rejected and lost. Naming the part after the content keeps the two
         # behaviours that matter: different content gets a fresh name, identical
         # content keeps the same one and is the no-op the server documents.
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        # 128 bits, as in the other integrations: the server's own content
+        # identity is an md5, so a longer suffix would not make two texts any
+        # more distinct, and a shorter one risks a collision (a 409, a lost write).
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
         multipart = _multipart_body(
             fields, {"data": (f"memory-{digest}.txt", text.encode("utf-8"))}
         )
