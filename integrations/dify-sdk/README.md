@@ -1,18 +1,87 @@
 ## Cognee (Self-Hosted)
 
 **Author:** topoteretes
-**Version:** 0.0.2
+**Version:** 0.1.0
 **Type:** tool
 
 ### Description
 
-Cognee (Self-Hosted) is a Dify tool plugin that connects to a **self-hosted Cognee server** for memory management. It lets you ingest text data into datasets, build a memory engine with the Cognify, search across them with advanced retrieval techniques, and update or delete data — all from within Dify workflows.
+Cognee (Self-Hosted) is a Dify tool plugin that connects to a **self-hosted Cognee server** for memory management. It exposes Cognee's memory API — **Remember**, **Recall**, **Remember Entry**, **Forget** and **Improve** — alongside the lower-level building blocks (add, cognify, search, update, delete), all from within Dify workflows.
 
 This plugin is designed for users running Cognee on their own infrastructure. For the cloud-hosted version, see the [Cognee (Cloud) plugin](https://github.com/topoteretes/cognee-integrations/tree/main/integrations/dify).
 
 **Tested with Cognee v1.6.1.** Other versions may have different API endpoints — verify compatibility before using a different version. Cognee 1.6 requires the server to be started with `DEFAULT_USER_PASSWORD` for the default user to be able to log in; see [Prerequisites](#prerequisites).
 
 ### Tools
+
+The five memory tools cover most workflows. The low-level tools remain for fine-grained control.
+
+#### Remember
+
+Ingest text and build the memory in one call (add + cognify, optionally followed by improve). The text is stored by content hash, so no file name is involved.
+
+**Parameters:**
+- **Text Data** (required) — Text content to remember.
+- **Dataset Name** (optional) — Target dataset, created if missing. Either Dataset Name or Dataset ID must be provided.
+- **Dataset ID** (optional) — UUID of an existing dataset.
+- **Node Set** (optional) — Comma-separated node set names for graph organization.
+- **Session ID** (optional) — Session to attribute the memory to, so Recall's session scope can find it. Cannot be combined with an ontology.
+- **Custom Prompt** (optional) — Custom prompt for entity extraction.
+- **Run in Background** (optional, default: false) — Return immediately with a pipeline run ID.
+- **Self Improvement** (optional, default: server default) — Run the improve loop after the memory is built.
+
+**Outputs:** `status`, `dataset_id`, `dataset_name`, `pipeline_run_id`, `items_processed`
+
+> Remember does not return a data ID. If a workflow later needs **Delete Data** or **Forget** by data ID, ingest with **Add Data** instead.
+
+#### Recall
+
+Query the memory with automatic search routing. When a Session ID is given, entries stored for that session are checked first.
+
+**Parameters:**
+- **Query** (required) — Natural language question.
+- **Datasets** / **Dataset IDs** (optional) — Comma-separated dataset names or UUIDs.
+- **Session ID** (optional) — Session whose remembered questions, answers and context feed the recall.
+- **Scope** (optional, default: Auto) — Memory sources: `Auto`, `graph`, `session`, `session_first`, `session_context`, `all`.
+- **Search Type** (optional, default: Auto) — Override the automatically chosen strategy for the graph lookup.
+- **System Prompt**, **Top K** (default: 15), **Only Context**, **Include References** — As for Search.
+
+**Outputs:** `results_count`, `results_text`, `answer`. Entries are tagged by source: graph entries carry the answer text, session entries the stored question and answer, and a `system` entry with status `memory_warming_up` means no graph exists yet for the requested datasets. `answer` is the first graph entry's text, ready to wire into an LLM node.
+
+#### Remember Entry
+
+Store a question and answer in a session's memory, without rebuilding the graph. Call it after the LLM node so the next Recall with the same Session ID sees the exchange.
+
+**Parameters:**
+- **Session ID** (required) — Session identifier, e.g. the conversation ID.
+- **Question** (required), **Answer** (required), **Context** (optional).
+- **Dataset Name** (optional, default: `main_dataset`) / **Dataset ID** (optional).
+
+**Outputs:** `status`, `entry_id`, `session_id`
+
+#### Forget
+
+Remove data from memory: a whole dataset, one data item, or only the memory (graph and embeddings) while keeping the raw data.
+
+**Parameters:**
+- **Dataset Name** / **Dataset ID** — One of the two is required; the ID wins when both are set.
+- **Data ID** (optional) — Forget one item instead of the whole dataset.
+- **Memory Only** (optional, default: false) — Keep the raw data so the dataset can be cognified again.
+- **Everything** (form only, default: false) — Permanently delete all datasets of the configured user. Not settable by the model.
+
+**Outputs:** `succeeded`
+
+#### Improve
+
+Run Cognee's self-improvement loop over a dataset. With Session IDs, the sessions' remembered entries are persisted into the permanent knowledge graph; without them only the graph enrichment stages run.
+
+**Parameters:**
+- **Dataset Name** / **Dataset ID** — One of the two is required.
+- **Session IDs** (optional) — Comma-separated session IDs to bridge into the graph.
+- **Build Global Context Index** (optional, default: false).
+- **Run in Background** (optional, default: false).
+
+**Outputs:** `status`, `stages_completed`, `stages_total`
 
 #### Add Data
 
@@ -86,11 +155,19 @@ Delete a specific data item from a dataset.
 
 ### Usage in Dify Workflows
 
-1. Use **Add Data** to ingest text into a dataset.
-2. Use **Cognify** to build the memory layer from that dataset.
-3. Use **Search** before LLM calls to provide relevant context from memory.
-4. Use **Update Data** to modify existing data items.
-5. Use **Delete Dataset** or **Delete Data** to manage your datasets.
+The two-node happy path:
+
+1. Use **Remember** to store text and build the memory in one step.
+2. Use **Recall** before the LLM node and wire its `answer` (or `results_text`) into the prompt.
+
+For chat memory across runs, pass the conversation ID as **Session ID** to Recall, and add a **Remember Entry** node after the LLM node with the same Session ID. Run **Improve** with those session IDs periodically to persist them into the graph.
+
+Fine-grained control:
+
+- **Add Data** then **Cognify** instead of Remember when you need the data ID or run cognify separately.
+- **Search** instead of Recall to pick the search type yourself.
+- **Update Data** to modify an existing data item.
+- **Forget** (preferred), or **Delete Dataset** / **Delete Data**, to remove data.
 
 ---
 

@@ -1,6 +1,6 @@
 [project]
 name = "cognee-dify-sdk-plugin"
-version = "0.0.2"
+version = "0.1.0"
 description = "Cognee SDK tool plugin for Dify – add data, cognify, search, and delete via a self-hosted Cognee server"
 requires-python = ">=3.12"
 license = "Apache-2.0"

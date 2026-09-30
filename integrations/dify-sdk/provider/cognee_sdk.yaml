@@ -73,6 +73,11 @@ credentials_for_provider:
       ja_JP: "Cognee サーバーのユーザーアカウントパスワード"
 
 tools:
+  - tools/remember.yaml
+  - tools/recall.yaml
+  - tools/remember_entry.yaml
+  - tools/forget.yaml
+  - tools/improve.yaml
   - tools/add_data.yaml
   - tools/cognify.yaml
   - tools/search.yaml
