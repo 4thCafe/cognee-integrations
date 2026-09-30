@@ -1,4 +1,5 @@
-"""Per-operation client timeouts: COGNEE_REMEMBER_TIMEOUT and COGNEE_REGISTER_TIMEOUT.
+"""Per-operation client timeouts: COGNEE_REMEMBER_TIMEOUT, COGNEE_REGISTER_TIMEOUT
+and COGNEE_REACHABLE_TIMEOUT.
 
 Only recall was tunable; the explicit remember submit and the session register
 call had hardcoded timeouts. Each now reads its own env var, falls back to the
@@ -94,3 +95,46 @@ def test_register_timeout_ignores_non_positive_and_non_finite_values(pc, monkeyp
     """A socket timeout of 0 fails at once and inf/nan raise; fall back to 15."""
     monkeypatch.setenv("COGNEE_REGISTER_TIMEOUT", value)
     assert _capture_register_timeout(pc, monkeypatch) == 15.0
+
+
+def _capture_reachable_timeout(pc, monkeypatch, **kwargs) -> float:
+    seen = {}
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(url, timeout=None, **_):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", fake_urlopen)
+    assert pc._backend_reachable("http://x", **kwargs) is True
+    return seen["timeout"]
+
+
+def test_reachable_timeout_defaults_to_2(pc, monkeypatch):
+    monkeypatch.delenv("COGNEE_REACHABLE_TIMEOUT", raising=False)
+    assert _capture_reachable_timeout(pc, monkeypatch) == 2.0
+
+
+def test_reachable_timeout_env_override(pc, monkeypatch):
+    # A tenant whose /health takes seconds must not have every sync skipped (#443).
+    monkeypatch.setenv("COGNEE_REACHABLE_TIMEOUT", "8")
+    assert _capture_reachable_timeout(pc, monkeypatch) == 8.0
+
+
+@pytest.mark.parametrize("value", ["soon", "0", "-3", "inf", "nan"])
+def test_reachable_timeout_ignores_malformed_values(pc, monkeypatch, value):
+    monkeypatch.setenv("COGNEE_REACHABLE_TIMEOUT", value)
+    assert _capture_reachable_timeout(pc, monkeypatch) == 2.0
+
+
+def test_explicit_reachable_timeout_wins_over_the_env(pc, monkeypatch):
+    monkeypatch.setenv("COGNEE_REACHABLE_TIMEOUT", "8")
+    assert _capture_reachable_timeout(pc, monkeypatch, timeout=0.5) == 0.5
