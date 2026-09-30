@@ -2179,7 +2179,7 @@ export class Cognee implements INodeType {
             name: 'fileNamePrefix',
             type: 'string',
             default: 'memory',
-            description: 'Text mode only. Item N is uploaded as PREFIX-N.txt; Cognee uses the file name as the data item name.',
+            description: 'Text mode only. Each text is uploaded as PREFIX-HASH.txt, HASH being a hash of the text; Cognee uses the file name as the data item name.',
           },
           {
             displayName: 'Graph Model (JSON)',

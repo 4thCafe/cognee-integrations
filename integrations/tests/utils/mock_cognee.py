@@ -214,6 +214,7 @@ class MockCogneeServer:
             elif "multipart/form-data" in ctype:
                 entry["form"] = dict(req.form)
                 entry["files"] = list(req.files.keys())
+                entry["filenames"] = [f.filename for f in req.files.values()]
             elif "application/x-www-form-urlencoded" in ctype:
                 entry["form"] = dict(req.form)
         except Exception:  # pragma: no cover - defensive
@@ -428,7 +429,9 @@ class MockCogneeServer:
                 200, {"dataset_id": dataset_id, "pipeline_run_id": f"run-{len(self.calls)}"}
             )
         dataset = req.form.get("datasetName", "")
-        _, ds = self.identity.datasets_create(dataset or "default", api_key)
+        status, ds = self.identity.datasets_create(dataset or "default", api_key)
+        if status == 401:
+            return _json(status, ds)
         return _json(
             200,
             {"dataset_id": ds["id"], "pipeline_run_id": f"run-{len(self.calls)}"},
@@ -529,6 +532,8 @@ class MockCogneeServer:
             return _json(200, self._improve_response)
         body_in = req.get_json(silent=True) or {}
         dataset = str(body_in.get("dataset_name") or "default")
+        if self.identity.is_foreign_minted_key(req.headers.get("X-Api-Key")):
+            return _json(401, {"detail": "invalid api key"})
         _, ds = self.identity.datasets_create(dataset)
         return _json(200, {"dataset_id": ds["id"], "status": "submitted"})
 

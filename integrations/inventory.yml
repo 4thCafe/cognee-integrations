@@ -23,7 +23,7 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-openclaw"
     cognee_dependency: http-api
-    current_version: "2026.9.8"
+    current_version: "2026.9.22"
     migration_status: done
     notes: "OpenClaw plugin with auto-recall/capture hooks"
 
@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.5.7"
+    current_version: "1.6.3"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -45,7 +45,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "1.5.2"
+    current_version: "1.6.2"
     migration_status: done
     notes: "Native agy plugin – session storage via named hooks, transcript-tail recall, and session-to-graph sync"
 
@@ -67,7 +67,7 @@ integrations:
     registry: codex-marketplace
     package_name: null
     cognee_dependency: cli
-    current_version: "1.6.7"
+    current_version: "1.7.2"
     migration_status: done
     notes: "Codex local plugin marketplace with Cognee CLI skills for setup, memory, codebase ingestion, and UI launch"
 
@@ -78,7 +78,7 @@ integrations:
     registry: pypi
     package_name: "cognee-integration-hermes-agent"
     cognee_dependency: http-api
-    current_version: "1.2.2"
+    current_version: "1.3.1"
     migration_status: done
     source_repo: https://github.com/NousResearch/hermes-agent/pull/7418
     notes: >-
@@ -171,7 +171,7 @@ integrations:
     registry: npm
     package_name: "n8n-nodes-cognee"
     cognee_dependency: http-api
-    current_version: "0.7.0"
+    current_version: "0.7.1"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee-n8n
     notes: "n8n community nodes – the Cognee action node (memory, datasets, search, sessions, skills) and the Cognee Memory sub-node for the AI Agent's memory port. Published via .github/workflows/n8n-publish.yml on `n8n-v*.*.*` tags."
@@ -202,6 +202,18 @@ integrations:
       automatic recall and capture, plus cognee_search / cognee_ask /
       cognee_remember tools. Talks to a cognee server over the HTTP API
       (/recall, /remember, /datasets, /forget); no cognee SDK dependency.
+
+  - slug: tapes-cassette
+    name: "Cognee Cassette for Paper's Tapes"
+    owner: cognee
+    language: python
+    registry: pypi
+    package_name: "cognee-integration-tapes-cassette"
+    cognee_dependency: sdk
+    current_version: "0.1.0"
+    migration_status: done
+    source_repo: https://github.com/topoteretes/cognee-integrations
+    notes: "Tapes cassette (cassette/v1alpha1) – syncs recorded agent sessions into cognee and exposes sync/search as MCP tools proxied under /v1/cassettes/cognee/."
 
   # ── Chat bots & editor (memory over the cognee HTTP API) ───────────
 
@@ -272,7 +284,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: http-api
-    current_version: "0.1.0"
+    current_version: "0.1.1"
     migration_status: done
     source_repo: https://github.com/topoteretes/cognee/pull/4067
     notes: "VS Code extension – remember/recall + 'ask my project memory' with citations linked back to source files; per-repo dataset isolation."
@@ -340,6 +352,6 @@ integrations:
     registry: npm
     package_name: "@cognee/cognee-opencode"
     cognee_dependency: http-api
-    current_version: "2026.9.5"
+    current_version: "2026.9.29"
     migration_status: done
     notes: "Native OpenCode plugin: per-turn recall, typed QA/tool capture, durable outbox and lifecycle hooks. Registry release pending."

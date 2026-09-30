@@ -55,6 +55,8 @@ export COGNEE_ANTIGRAVITY_BACKEND=local  # or cloud
 This plugin-specific switch takes precedence over the shared `COGNEE_BACKEND`
 switch and does not change the configuration used by other Cognee plugins.
 
+**Default user and its password.** The local server is started with `DEFAULT_USER_EMAIL=default_user@example.com` and `DEFAULT_USER_PASSWORD=default_password`, which is how cognee 1.6.0 and later create the default user at all (a server started without `DEFAULT_USER_PASSWORD` creates no default account, and the password is set once and never rewritten). The plugin logs in as that user to mint its owner API key, so a fresh install needs no manual step and an existing install keeps working. Exporting `DEFAULT_USER_EMAIL`/`DEFAULT_USER_PASSWORD` yourself overrides what the plugin passes; `COGNEE_USER_EMAIL`/`COGNEE_USER_PASSWORD` pick the user the plugin logs in as, and a non-default user must already exist on the server. When pointing at a server you run yourself (`COGNEE_BASE_URL`), either start it with `DEFAULT_USER_PASSWORD` set to the same value as `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY` so no login is needed; a server without either answers the login with an error that says so.
+
 ## Plugin identity and shared agent memory
 
 Antigravity follows the same identity model as the Claude Code and Codex plugins:
@@ -158,4 +160,4 @@ installing the plugin or changing local Antigravity configuration.
 
 The shared Python hooks support capture opt-out (`COGNEE_CAPTURE=0`), tool/path filtering and credential redaction before buffering or upload. See [the shared controls](../claude-code/README.md#automatic-capture-controls) and [configuration precedence](../CONFIGURATION.md). Structured log migration is documented in [EVENTS.md](EVENTS.md).
 
-Project node sets (`COGNEE_PROJECT_NODE_SET=auto` or a fixed name) and verified companion routing (`COGNEE_SESSION_COMPANION_DATASET=1`) follow the same contract as Claude Code/Codex. They require the server extension in [cognee#4948](https://github.com/topoteretes/cognee/pull/4948); unverified companions fall back to the primary dataset and unsupported project tags keep capture queued. Both features default off.
+Project node sets (`COGNEE_PROJECT_NODE_SET=auto` or a fixed name) and verified companion routing (`COGNEE_SESSION_COMPANION_DATASET=1`) follow the same contract as Claude Code/Codex. They require the server extension in [cognee#4948](https://github.com/topoteretes/cognee/pull/4948); unverified companions fall back to the primary dataset and unsupported project tags keep capture queued. Both features default off. A named project (or `COGNEE_RECALL_PROJECT_NODE_SET`, recall only) also scopes graph recall to that node set plus `COGNEE_RECALL_SHARED_NODE_SETS` (default `global,user_context`); `COGNEE_RECALL_PROJECT_SCOPE=false` turns the scoping off.
