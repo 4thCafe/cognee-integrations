@@ -102,20 +102,9 @@ integrations:
     registry: dify-marketplace
     package_name: "cognee"
     cognee_dependency: http-api
-    current_version: "0.0.1"
-    migration_status: done
-    notes: "Dify tool plugin – add data, cognify, search, delete via Cognee Cloud API"
-
-  - slug: dify-sdk
-    name: "Cognee (Self-Hosted) Plugin for Dify"
-    owner: cognee
-    language: python
-    registry: dify-marketplace
-    package_name: "cognee-sdk"
-    cognee_dependency: http-api
     current_version: "0.1.0"
     migration_status: done
-    notes: "Dify tool plugin for local/self-hosted Cognee – targets cognee OSS server API (tested with cognee 1.6.1)"
+    notes: "Dify tool plugin for Cognee Cloud and self-hosted Cognee – remember, recall, forget, improve plus add/cognify/search/update/delete over the cognee /api/v1 HTTP API (tested with cognee 1.6.1)"
 
   - slug: google-adk
     name: "Cognee Integration for Google ADK"

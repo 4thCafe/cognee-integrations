@@ -4,29 +4,34 @@ from typing import Any
 import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
+from tools.cognee_client import authorize, base_url_of, error_text
+
+DELETE_TIMEOUT = 600
 
 
 class DeleteDatasetTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
-        base_url = self.runtime.credentials["base_url"].rstrip("/")
-        api_key = self.runtime.credentials["api_key"]
-
+        base_url = base_url_of(self.runtime)
         dataset_id = tool_parameters["dataset_id"]
 
         try:
-            response = httpx.delete(
-                f"{base_url}/datasets/{dataset_id}",
-                headers={"X-Api-Key": api_key},
-                timeout=120,
-            )
-            response.raise_for_status()
+            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+                response = client.delete(
+                    f"{base_url}/api/v1/datasets/{dataset_id}",
+                    headers=authorize(client, self.runtime),
+                    timeout=DELETE_TIMEOUT,
+                )
+                response.raise_for_status()
 
-            yield self.create_json_message({"succeeded": True, "dataset_id": dataset_id})
-            yield self.create_variable_message("succeeded", True)
-            yield self.create_variable_message("dataset_id", dataset_id)
-            yield self.create_text_message(f"Successfully deleted dataset '{dataset_id}'.")
+                yield self.create_json_message({"succeeded": True, "dataset_id": dataset_id})
+                yield self.create_variable_message("succeeded", True)
+                yield self.create_variable_message("dataset_id", dataset_id)
+                yield self.create_text_message(f"Successfully deleted dataset '{dataset_id}'.")
         except Exception as e:
-            yield self.create_json_message({"succeeded": False, "dataset_id": dataset_id})
+            error_msg = error_text(e, "Failed to delete dataset")
+            yield self.create_json_message(
+                {"succeeded": False, "dataset_id": dataset_id, "error": error_msg}
+            )
             yield self.create_variable_message("succeeded", False)
             yield self.create_variable_message("dataset_id", dataset_id)
-            yield self.create_text_message(f"Failed to delete dataset: {str(e)}")
+            yield self.create_text_message(error_msg)

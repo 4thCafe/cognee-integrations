@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
-from tools.cognee_client import auth_headers, credentials, error_text, login, parse_json
+from tools.cognee_client import authorize, base_url_of, error_text, parse_json
 
 REMEMBER_ENTRY_TIMEOUT = 120
 
@@ -38,17 +38,15 @@ def build_body(tool_parameters: dict[str, Any]) -> dict[str, Any]:
 
 class RememberEntryTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
-        base_url, user_email, user_password = credentials(self.runtime)
+        base_url = base_url_of(self.runtime)
         body = build_body(tool_parameters)
 
         try:
-            with httpx.Client(trust_env=False) as client:
-                token = login(client, base_url, user_email, user_password)
-
+            with httpx.Client(trust_env=False, follow_redirects=True) as client:
                 response = client.post(
                     f"{base_url}/api/v1/remember/entry",
                     json=body,
-                    headers=auth_headers(token, json=True),
+                    headers=authorize(client, self.runtime, json=True),
                     timeout=REMEMBER_ENTRY_TIMEOUT,
                 )
                 response.raise_for_status()

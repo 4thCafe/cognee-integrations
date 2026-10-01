@@ -18,7 +18,7 @@ NEW_TOOLS = ["remember", "recall", "remember_entry", "forget", "improve"]
 
 
 def test_provider_registers_every_tool_yaml():
-    provider = yaml.safe_load((PLUGIN_ROOT / "provider" / "cognee_sdk.yaml").read_text())
+    provider = yaml.safe_load((PLUGIN_ROOT / "provider" / "cognee.yaml").read_text())
     registered = set(provider["tools"])
     on_disk = {f"tools/{p.name}" for p in (PLUGIN_ROOT / "tools").glob("*.yaml")}
     assert registered == on_disk
@@ -158,9 +158,9 @@ def test_recall_body_carries_scope_session_and_datasets():
 def test_recall_headers_ask_for_json():
     from tools.cognee_client import auth_headers
 
-    headers = auth_headers("tok", json=True)
+    headers = auth_headers({"api_key": "tok"}, client=None, json=True)
     assert headers["Accept"] == "application/json"
-    assert headers["Authorization"] == "Bearer tok"
+    assert headers["X-Api-Key"] == "tok"
     assert headers["Content-Type"] == "application/json"
 
 

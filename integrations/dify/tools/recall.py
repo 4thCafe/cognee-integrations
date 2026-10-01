@@ -7,10 +7,9 @@ from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 from tools.cognee_client import (
     as_bool,
-    auth_headers,
-    credentials,
+    authorize,
+    base_url_of,
     error_text,
-    login,
     split_csv,
 )
 
@@ -118,17 +117,15 @@ def format_results(result: Any) -> tuple[int, str, str]:
 
 class RecallTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
-        base_url, user_email, user_password = credentials(self.runtime)
+        base_url = base_url_of(self.runtime)
         body = build_body(tool_parameters)
 
         try:
-            with httpx.Client(trust_env=False) as client:
-                token = login(client, base_url, user_email, user_password)
-
+            with httpx.Client(trust_env=False, follow_redirects=True) as client:
                 response = client.post(
                     f"{base_url}/api/v1/recall",
                     json=body,
-                    headers=auth_headers(token, json=True),
+                    headers=authorize(client, self.runtime, json=True),
                     timeout=RECALL_TIMEOUT,
                 )
                 response.raise_for_status()
