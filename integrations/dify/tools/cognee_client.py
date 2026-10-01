@@ -1,8 +1,8 @@
 """Shared helpers for the tools that call the Cognee API.
 
-Kept deliberately small: credential lookup, authentication, header
-construction, parameter parsing and error formatting. Each tool still owns
-its request.
+Kept deliberately small: HTTP client construction, credential normalization,
+authentication, header construction, parameter parsing, JSON reading and
+error formatting. Each tool still owns its request.
 
 Authentication works against both deployments of the same ``/api/v1`` API:
 
@@ -22,6 +22,23 @@ LOGIN_TIMEOUT = 60
 API_PREFIX = "/api/v1"
 
 
+# --- transport -------------------------------------------------------------------------
+
+
+def make_client() -> httpx.Client:
+    """A fresh HTTP client with the plugin's transport policy.
+
+    ``trust_env=False`` keeps a system proxy from intercepting calls to a
+    local server. ``follow_redirects=True`` is required by Cognee Cloud, whose
+    gateway answers ``/api/v1/datasets`` with a 307 to the trailing-slash URL.
+    Timeouts are set per request by each tool.
+    """
+    return httpx.Client(trust_env=False, follow_redirects=True)
+
+
+# --- credentials -----------------------------------------------------------------------
+
+
 def normalize_base_url(raw: str) -> str:
     """Server root the ``/api/v1`` routes hang off.
 
@@ -38,8 +55,25 @@ def normalize_base_url(raw: str) -> str:
     return url.rstrip("/")
 
 
+def normalize_credentials(credentials: dict[str, Any]) -> dict[str, str]:
+    """The provider credentials with one agreed shape for every caller.
+
+    Whitespace is stripped from the URL, key and email (the password is kept
+    verbatim), so provider validation and tool execution see the same values.
+    """
+    return {
+        "base_url": normalize_base_url(credentials.get("base_url", "")),
+        "api_key": (credentials.get("api_key") or "").strip(),
+        "user_email": (credentials.get("user_email") or "").strip(),
+        "user_password": credentials.get("user_password") or "",
+    }
+
+
 def base_url_of(runtime: Any) -> str:
-    return normalize_base_url(runtime.credentials.get("base_url", ""))
+    return normalize_credentials(runtime.credentials)["base_url"]
+
+
+# --- authentication --------------------------------------------------------------------
 
 
 def login(client: httpx.Client, base_url: str, email: str, password: str) -> str:
@@ -50,22 +84,24 @@ def login(client: httpx.Client, base_url: str, email: str, password: str) -> str
         timeout=LOGIN_TIMEOUT,
     )
     response.raise_for_status()
-    return response.json()["access_token"]
+    return parse_json(response)["access_token"]
 
 
 def auth_headers(
     credentials: dict[str, Any], client: httpx.Client, *, json: bool = False
 ) -> dict[str, str]:
-    """Headers that authenticate a request for the given provider credentials."""
-    api_key = (credentials.get("api_key") or "").strip()
-    if api_key:
-        headers = {"X-Api-Key": api_key, "Accept": "application/json"}
+    """Headers that authenticate a request for the given provider credentials.
+
+    Raises ``ValueError`` when neither method is configured and
+    ``httpx.HTTPStatusError`` when the login is refused.
+    """
+    creds = normalize_credentials(credentials)
+    if creds["api_key"]:
+        headers = {"X-Api-Key": creds["api_key"], "Accept": "application/json"}
     else:
-        email = credentials.get("user_email") or ""
-        password = credentials.get("user_password") or ""
-        if not email or not password:
+        if not creds["user_email"] or not creds["user_password"]:
             raise ValueError("Configure either an API key or a user email and password for Cognee")
-        token = login(client, normalize_base_url(credentials.get("base_url", "")), email, password)
+        token = login(client, creds["base_url"], creds["user_email"], creds["user_password"])
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if json:
         headers["Content-Type"] = "application/json"
@@ -75,6 +111,9 @@ def auth_headers(
 def authorize(client: httpx.Client, runtime: Any, *, json: bool = False) -> dict[str, str]:
     """``auth_headers`` for a tool's runtime credentials."""
     return auth_headers(runtime.credentials, client, json=json)
+
+
+# --- parameters and responses ----------------------------------------------------------
 
 
 def split_csv(value: Any) -> list[str]:
@@ -91,11 +130,20 @@ def as_bool(value: Any) -> bool:
     return str(value).strip().lower() == "true"
 
 
-def parse_json(response: httpx.Response, default: Any = None) -> Any:
+def parse_json(response: httpx.Response) -> Any:
+    """The response body as JSON; a non-JSON body is an error, never a success.
+
+    Every endpoint the tools parse promises a JSON body. Routes that answer with
+    no content (the dataset and data deletes) are not parsed at all.
+    """
     try:
         return response.json()
-    except Exception:
-        return default if default is not None else {"status": "ok"}
+    except ValueError as exc:
+        snippet = response.text[:200].strip()
+        raise ValueError(
+            f"Cognee returned a non-JSON response (HTTP {response.status_code})"
+            + (f": {snippet}" if snippet else "")
+        ) from exc
 
 
 def error_text(exc: Exception, action: str) -> str:

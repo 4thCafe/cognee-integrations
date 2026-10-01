@@ -1,10 +1,9 @@
 from collections.abc import Generator
 from typing import Any
 
-import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
-from tools.cognee_client import authorize, base_url_of, error_text
+from tools.cognee_client import authorize, base_url_of, error_text, make_client
 
 LIST_TIMEOUT = 120
 
@@ -32,7 +31,7 @@ class GetDatasetDataTool(Tool):
         dataset_id = tool_parameters["dataset_id"]
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+            with make_client() as client:
                 response = client.get(
                     f"{base_url}/api/v1/datasets/{dataset_id}/data",
                     headers=authorize(client, self.runtime),

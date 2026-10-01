@@ -1,27 +1,44 @@
-"""Behaviour needed for Cognee Cloud tenants: redirects and asynchronous builds."""
-
-import re
-import sys
-from pathlib import Path
+"""Behaviour needed for Cognee Cloud tenants: redirects and background builds."""
 
 import httpx
-
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
+from conftest import Runtime, form_fields, invoke, text_of, variables
 
 
-def test_every_http_client_follows_redirects():
-    # The cloud gateway answers /api/v1/datasets with a 307 to the trailing-slash
-    # URL; httpx does not follow redirects unless asked.
-    offenders = []
-    for path in list((PLUGIN_ROOT / "tools").glob("*.py")) + list(
-        (PLUGIN_ROOT / "provider").glob("*.py")
-    ):
-        for match in re.finditer(r"httpx\.Client\(([^)]*)\)", path.read_text()):
-            if "follow_redirects=True" not in match.group(1):
-                offenders.append(f"{path.name}: {match.group(0)}")
-    assert offenders == []
+def test_the_client_follows_a_trailing_slash_redirect(monkeypatch):
+    # The cloud gateway answers /api/v1/datasets with a 307 to the trailing-slash URL.
+    import tools.cognee_client as cognee_client
+
+    seen = []
+
+    def gateway(request):
+        seen.append(str(request.url))
+        if request.url.path == "/api/v1/datasets":
+            return httpx.Response(307, headers={"location": "https://t.cloud/api/v1/datasets/"})
+        return httpx.Response(200, json=[{"id": "ds-1", "name": "notes"}])
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(gateway), **kw)
+    )
+    with cognee_client.make_client() as client:
+        response = client.get("https://t.cloud/api/v1/datasets")
+    assert response.status_code == 200
+    assert seen == ["https://t.cloud/api/v1/datasets", "https://t.cloud/api/v1/datasets/"]
+
+
+def test_remember_always_submits_a_background_run():
+    # A blocking remember can exceed the cloud gateway's HTTP timeout; the
+    # plugin submits in the background and waits itself.
+    from tools.remember import build_form
+
+    assert build_form({"text_data": "t", "dataset_name": "n"})["run_in_background"] == "true"
+
+
+def test_text_item_name_matches_the_server_convention():
+    from tools.remember import text_item_name
+
+    # md5("abc") is well known; the server stores raw text as text_<md5>.txt
+    assert text_item_name("abc") == "text_900150983cd24fb0d6963f7d28e17f72.txt"
 
 
 class _Clock:
@@ -35,126 +52,195 @@ class _Clock:
         self.t += seconds
 
 
-class _ItemsClient:
-    """Scripted ``/processing-status`` answers (total, pending); 404 when unsupported."""
+class _Server:
+    """Scripted answers for the status routes the wait uses; the last value repeats."""
 
-    def __init__(self, script, supported=True, status_script=None):
-        self._script = list(script)
-        self._supported = supported
-        self._status_script = list(status_script or [])
+    def __init__(self, runs, statuses, items=(), summary_error=False):
+        self._runs = list(runs)
+        self._statuses = list(statuses)
+        self._items = list(items)
+        self._summary_error = summary_error
         self.calls = []
 
-    def _next(self, script):
+    @staticmethod
+    def _step(script):
         return script.pop(0) if len(script) > 1 else script[0]
 
     def get(self, url, **kwargs):
         self.calls.append(url)
         request = httpx.Request("GET", url)
-        if url.endswith("/processing-status"):
-            if not self._supported:
-                return httpx.Response(404, json={"detail": "not found"}, request=request)
-            total, pending = self._next(self._script)
-            return httpx.Response(
-                200,
-                json={
-                    "total": total,
-                    "completed": total - pending,
-                    "pending": pending,
-                    "items": [],
-                },
-                request=request,
-            )
+        if url.endswith("/graph-summary"):
+            if self._summary_error:
+                return httpx.Response(409, json={"error": "nope"}, request=request)
+            run = self._step(self._runs)
+            ds = kwargs["params"]["dataset_ids"]
+            rows = [] if run is None else [{"datasetId": ds, "pipelineRunId": run}]
+            return httpx.Response(200, json=rows, request=request)
         if url.endswith("/datasets/status"):
-            status = self._next(self._status_script)
-            return httpx.Response(200, json={kwargs["params"]["dataset"]: status}, request=request)
+            return httpx.Response(
+                200, json={kwargs["params"]["dataset"]: self._step(self._statuses)}, request=request
+            )
+        if url.endswith("/data"):
+            return httpx.Response(200, json=[{"name": n} for n in self._items], request=request)
         if url.endswith("/api/v1/datasets"):
             return httpx.Response(200, json=[{"id": "ds-1", "name": "notes"}], request=request)
         raise AssertionError(url)
 
 
-def test_wait_ignores_the_stale_completed_status_and_waits_for_the_new_item():
-    from tools.remember import wait_for_dataset
+def test_wait_rejects_the_previous_run_and_accepts_the_new_one():
+    from tools.remember import wait_for_build
 
-    # Dataset had 1 item before the call; the new one appears, then finishes.
-    client = _ItemsClient([(1, 0), (2, 1), (2, 1), (2, 0)])
-    clock = _Clock()
-    status = wait_for_dataset(
-        client, "http://x", {}, "ds-1", baseline_total=1, sleep=clock.sleep, now=clock.now
+    # Old run "r1" still completed; then the new run "r2" appears, runs, completes.
+    server = _Server(
+        runs=["r1", "r1", "r2", "r2"],
+        statuses=["DATASET_PROCESSING_STARTED", "DATASET_PROCESSING_COMPLETED"],
     )
+    clock = _Clock()
+    status = wait_for_build(server, "http://x", {}, "ds-1", "r1", sleep=clock.sleep, now=clock.now)
     assert status == "completed"
-    assert len(client.calls) == 4
+    # status was only consulted once the run id had changed
+    assert sum(u.endswith("/datasets/status") for u in server.calls) == 2
 
 
-def test_wait_accepts_deduplicated_content_after_the_grace_period():
-    from tools.remember import DEDUP_GRACE, wait_for_dataset
+def test_wait_on_a_new_dataset_accepts_the_first_run():
+    from tools.remember import wait_for_build
 
-    # Identical text is deduplicated: total never grows, nothing pending.
-    client = _ItemsClient([(1, 0)])
+    server = _Server(runs=[None, "r1"], statuses=["DATASET_PROCESSING_COMPLETED"])
     clock = _Clock()
-    status = wait_for_dataset(
-        client, "http://x", {}, "ds-1", baseline_total=1, sleep=clock.sleep, now=clock.now
-    )
+    status = wait_for_build(server, "http://x", {}, "ds-1", None, sleep=clock.sleep, now=clock.now)
     assert status == "completed"
-    assert clock.t >= DEDUP_GRACE
 
 
-def test_wait_falls_back_to_dataset_status_when_per_item_route_is_missing():
-    from tools.remember import wait_for_dataset
+def test_wait_reports_errored_runs():
+    from tools.remember import wait_for_build
 
-    client = _ItemsClient(
-        [],
-        supported=False,
-        status_script=["DATASET_PROCESSING_STARTED", "DATASET_PROCESSING_COMPLETED"],
-    )
+    server = _Server(runs=["r2"], statuses=["DATASET_PROCESSING_ERRORED"])
+    assert wait_for_build(server, "http://x", {}, "ds-1", "r1", sleep=lambda s: None) == "errored"
+
+
+def test_wait_never_guesses_when_nothing_changes():
+    from tools.remember import wait_for_build
+
+    # The run id never changes: no evidence, so the result is running, not completed.
+    server = _Server(runs=["r1"], statuses=["DATASET_PROCESSING_COMPLETED"])
     clock = _Clock()
-    status = wait_for_dataset(
-        client, "http://x", {}, "ds-1", baseline_total=0, sleep=clock.sleep, now=clock.now
+    status = wait_for_build(
+        server, "http://x", {}, "ds-1", "r1", sleep=clock.sleep, now=clock.now, timeout=30
     )
-    assert status == "completed"
-    assert any(u.endswith("/datasets/status") for u in client.calls)
+    assert status == "running"
+    assert not any(u.endswith("/datasets/status") for u in server.calls)
 
 
-def test_wait_fallback_does_not_trust_an_immediate_completed():
-    from tools.remember import DEDUP_GRACE, wait_for_dataset
+def test_wait_tolerates_a_failing_graph_summary():
+    from tools.remember import wait_for_build
 
-    client = _ItemsClient([], supported=False, status_script=["DATASET_PROCESSING_COMPLETED"])
+    server = _Server(runs=[], statuses=["DATASET_PROCESSING_COMPLETED"], summary_error=True)
     clock = _Clock()
-    status = wait_for_dataset(
-        client, "http://x", {}, "ds-1", baseline_total=None, sleep=clock.sleep, now=clock.now
-    )
-    assert status == "completed"
-    assert clock.t >= DEDUP_GRACE  # only accepted after the grace period
-
-
-def test_wait_reports_errored_and_gives_up_at_the_deadline():
-    from tools.remember import wait_for_dataset
-
-    client = _ItemsClient([], supported=False, status_script=["DATASET_PROCESSING_ERRORED"])
-    assert (
-        wait_for_dataset(client, "http://x", {}, "ds-1", baseline_total=None, sleep=lambda s: None)
-        == "errored"
-    )
-
-    client = _ItemsClient([(2, 1)])
-    clock = _Clock()
-    status = wait_for_dataset(
-        client,
-        "http://x",
-        {},
-        "ds-1",
-        baseline_total=1,
-        sleep=clock.sleep,
-        now=clock.now,
-        deadline=5.0,
+    status = wait_for_build(
+        server, "http://x", {}, "ds-1", None, sleep=clock.sleep, now=clock.now, timeout=10
     )
     assert status == "running"
 
 
-def test_resolve_dataset_id_and_item_count():
-    from tools.remember import dataset_item_count, resolve_dataset_id
+def test_pre_call_lookups():
+    from tools.remember import has_text_item, latest_run_id, resolve_dataset_id, text_item_name
 
-    client = _ItemsClient([(3, 0)])
-    assert resolve_dataset_id(client, "http://x", {}, "notes") == "ds-1"
-    assert resolve_dataset_id(client, "http://x", {}, "missing") == ""
-    assert dataset_item_count(client, "http://x", {}, "ds-1") == 3
-    assert dataset_item_count(_ItemsClient([], supported=False), "http://x", {}, "ds-1") is None
+    server = _Server(runs=["r9"], statuses=[], items=[text_item_name("same text"), "other.txt"])
+    assert resolve_dataset_id(server, "http://x", {}, "notes") == "ds-1"
+    assert resolve_dataset_id(server, "http://x", {}, "missing") == ""
+    assert latest_run_id(server, "http://x", {}, "ds-1") == "r9"
+    assert has_text_item(server, "http://x", {}, "ds-1", "same text") is True
+    assert has_text_item(server, "http://x", {}, "ds-1", "new text") is False
+
+
+def test_summaries_are_honest():
+    from tools.remember import summarize
+
+    base = {"dataset_name": "n", "dataset_id": "d"}
+    done = {**base, "status": "completed"}
+    running = {**base, "status": "running"}
+    assert "already remembered" in summarize(done, waited=False, deduplicated=True)
+    assert "not ready to recall yet" in summarize(running, waited=True, deduplicated=False)
+    assert "Poll GET /api/v1/datasets/status" in summarize(
+        running, waited=False, deduplicated=False
+    )
+    errored = {**base, "status": "errored", "error": "boom"}
+    assert "Remember failed" in summarize(errored, waited=True, deduplicated=False)
+    assert "ready to recall" in summarize(done, waited=True, deduplicated=False)
+
+
+def test_remember_invocation_submits_waits_and_reports(fake_cognee, monkeypatch):
+    """Submission then polling, as it happens against a cloud tenant."""
+    import tools.remember as remember_module
+    from tools.remember import RememberTool
+
+    monkeypatch.setattr(remember_module, "POLL_INTERVAL", 0)
+    runs = iter(["r1", "r1", "r2"])
+    statuses = iter(["DATASET_PROCESSING_COMPLETED"])
+
+    fake_cognee.on("GET", "/api/v1/datasets", json_body=[{"id": "ds-1", "name": "notes"}])
+    fake_cognee.on("GET", "/api/v1/datasets/ds-1/data", json_body=[{"name": "other.txt"}])
+    fake_cognee.on(
+        "GET",
+        "/api/v1/datasets/graph-summary",
+        lambda r: (200, [{"datasetId": "ds-1", "pipelineRunId": next(runs)}]),
+    )
+    fake_cognee.on("GET", "/api/v1/datasets/status", lambda r: (200, {"ds-1": next(statuses)}))
+    fake_cognee.on(
+        "POST",
+        "/api/v1/remember",
+        json_body={"status": "running", "dataset_id": "ds-1", "dataset_name": "notes"},
+    )
+
+    messages = invoke(RememberTool, Runtime(), {"text_data": "new text", "dataset_name": "notes"})
+
+    submitted = form_fields(fake_cognee.calls("POST", "/api/v1/remember")[0])
+    assert submitted["run_in_background"] == ["true"]
+    assert submitted["raw_data"] == ["new text"]
+    assert len(fake_cognee.calls("GET", "/api/v1/datasets/graph-summary")) == 3
+    assert len(fake_cognee.calls("GET", "/api/v1/datasets/status")) == 1
+
+    out = variables(messages)
+    assert out["status"] == "completed"
+    assert out["dataset_id"] == "ds-1"
+    assert "ready to recall" in text_of(messages)
+
+
+def test_remember_invocation_detects_deduplicated_text(fake_cognee):
+    from tools.remember import RememberTool, text_item_name
+
+    fake_cognee.on(
+        "GET", "/api/v1/datasets/ds-1/data", json_body=[{"name": text_item_name("same")}]
+    )
+    fake_cognee.on(
+        "GET",
+        "/api/v1/datasets/graph-summary",
+        json_body=[{"datasetId": "ds-1", "pipelineRunId": "r1"}],
+    )
+    fake_cognee.on(
+        "POST",
+        "/api/v1/remember",
+        json_body={"status": "running", "dataset_id": "ds-1", "dataset_name": "n"},
+    )
+    messages = invoke(RememberTool, Runtime(), {"text_data": "same", "dataset_id": "ds-1"})
+    assert fake_cognee.calls("GET", "/api/v1/datasets/status") == []
+    assert variables(messages)["status"] == "completed"
+    assert "already remembered" in text_of(messages)
+
+
+def test_remember_invocation_does_not_wait_in_background_mode(fake_cognee):
+    from tools.remember import RememberTool
+
+    fake_cognee.on(
+        "POST",
+        "/api/v1/remember",
+        json_body={"status": "running", "dataset_id": "ds-1", "dataset_name": "n"},
+    )
+    messages = invoke(
+        RememberTool,
+        Runtime(),
+        {"text_data": "t", "dataset_name": "n", "run_in_background": "true"},
+    )
+    assert [r.url.path for r in fake_cognee.requests] == ["/api/v1/remember"]
+    assert variables(messages)["status"] == "running"
+    assert "started in the background" in text_of(messages)

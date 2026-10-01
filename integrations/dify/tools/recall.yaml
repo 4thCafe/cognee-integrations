@@ -8,10 +8,10 @@ identity:
     ja_JP: "想起"
 description:
   human:
-    en_US: "Query the memory on your local Cognee server with automatic search routing and session-aware lookup"
-    zh_Hans: "在本地 Cognee 服务器上查询内存，自动选择搜索类型并支持会话感知查找"
-    pt_BR: "Consultar a memória no seu servidor Cognee local com roteamento automático de pesquisa e busca ciente da sessão"
-    ja_JP: "ローカル Cognee サーバーのメモリを検索。検索タイプを自動選択し、セッションを考慮した検索を行います"
+    en_US: "Query the memory on your Cognee server with automatic search routing and session-aware lookup"
+    zh_Hans: "在Cognee 服务器上查询内存，自动选择搜索类型并支持会话感知查找"
+    pt_BR: "Consultar a memória no seu servidor Cognee com roteamento automático de pesquisa e busca ciente da sessão"
+    ja_JP: "Cognee サーバーのメモリを検索。検索タイプを自動選択し、セッションを考慮した検索を行います"
   llm: "Recall relevant information from Cognee memory. Picks the search strategy automatically and, when a session_id is given, checks the session's own memory first. Use this before answering to ground the response in what has been remembered."
 parameters:
   - name: query

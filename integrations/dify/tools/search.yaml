@@ -8,11 +8,11 @@ identity:
     ja_JP: "検索"
 description:
   human:
-    en_US: "Search the memory on your local Cognee server"
-    zh_Hans: "在本地 Cognee 服务器的内存中搜索"
-    pt_BR: "Pesquisar no grafo de conhecimento do seu servidor Cognee local"
-    ja_JP: "ローカル Cognee サーバのメモリを検索"
-  llm: "Search the memory on the local Cognee server to retrieve relevant information from previously ingested and cognified datasets."
+    en_US: "Search the memory on your Cognee server"
+    zh_Hans: "在Cognee 服务器的内存中搜索"
+    pt_BR: "Pesquisar no grafo de conhecimento do seu servidor Cognee"
+    ja_JP: "Cognee サーバーのメモリを検索"
+  llm: "Search the memory on the Cognee server to retrieve relevant information from previously ingested and cognified datasets."
 parameters:
   - name: query
     type: string

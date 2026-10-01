@@ -1,10 +1,9 @@
 from collections.abc import Generator
 from typing import Any
 
-import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
-from tools.cognee_client import authorize, base_url_of, error_text
+from tools.cognee_client import authorize, base_url_of, error_text, make_client
 
 CREATE_TIMEOUT = 120
 
@@ -15,7 +14,7 @@ class CreateDatasetTool(Tool):
         name = tool_parameters["name"]
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+            with make_client() as client:
                 # Returns the existing dataset when one with this name already exists.
                 response = client.post(
                     f"{base_url}/api/v1/datasets",

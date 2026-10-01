@@ -5,7 +5,7 @@ import httpx
 from dify_plugin import ToolProvider
 from dify_plugin.config.logger_format import plugin_logger_handler
 from dify_plugin.errors.tool import ToolProviderCredentialValidationError
-from tools.cognee_client import normalize_base_url
+from tools.cognee_client import auth_headers, make_client, normalize_credentials
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -52,75 +52,65 @@ def api_key_error_message(status_code: int, body: str) -> str:
 
 class CogneeProvider(ToolProvider):
     def _validate_credentials(self, credentials: dict[str, Any]) -> None:
-        base_url = normalize_base_url(credentials.get("base_url", ""))
-        api_key = (credentials.get("api_key") or "").strip()
-        user_email = (credentials.get("user_email") or "").strip()
-        user_password = credentials.get("user_password") or ""
-
+        creds = normalize_credentials(credentials)
+        base_url = creds["base_url"]
         logger.info(f"Validating credentials for base_url={base_url}")
 
         if not base_url:
             raise ToolProviderCredentialValidationError("Cognee Server URL is required")
-        if not api_key and not (user_email and user_password):
+        if not creds["api_key"] and not (creds["user_email"] and creds["user_password"]):
             raise ToolProviderCredentialValidationError(
                 "Provide either an API Key (Cognee Cloud, or a self-hosted server with API keys) "
                 "or both User Email and User Password (self-hosted server)."
             )
 
-        # 1. Health check
-        try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+        with make_client() as client:
+            # 1. Reachability: the only check that can tell a wrong URL from a
+            #    wrong credential.
+            try:
                 response = client.get(f"{base_url}/health", timeout=TIMEOUT)
-            logger.info(f"Health check response: {response.status_code}")
-            response.raise_for_status()
-        except httpx.ConnectError:
-            raise ToolProviderCredentialValidationError(
-                f"Cannot connect to Cognee server at {base_url}. "
-                "Is the server running? For a local server start it with: docker compose up -d"
-            )
-        except httpx.HTTPStatusError as e:
-            raise ToolProviderCredentialValidationError(
-                f"Cognee health check failed with status {e.response.status_code}: "
-                f"{e.response.text}"
-            )
-        except Exception as e:
-            raise ToolProviderCredentialValidationError(
-                f"Failed to connect to Cognee server: {str(e)}"
-            )
+                logger.info(f"Health check response: {response.status_code}")
+                response.raise_for_status()
+            except httpx.ConnectError:
+                raise ToolProviderCredentialValidationError(
+                    f"Cannot connect to Cognee server at {base_url}. "
+                    "Is the server running? For a local server start it with: docker compose up -d"
+                )
+            except httpx.HTTPStatusError as e:
+                raise ToolProviderCredentialValidationError(
+                    f"Cognee health check failed with status {e.response.status_code}: "
+                    f"{e.response.text}"
+                )
+            except Exception as e:
+                raise ToolProviderCredentialValidationError(
+                    f"Failed to connect to Cognee server: {str(e)}"
+                )
 
-        # 2. Verify the credentials against an authenticated route
-        try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
-                if api_key:
+            # 2. The same authentication the tools use, against an authenticated route.
+            try:
+                headers = auth_headers(creds, client)
+            except httpx.HTTPStatusError as e:
+                # Only the login path raises here; the API key is checked below.
+                raise ToolProviderCredentialValidationError(
+                    login_error_message(e.response.status_code, e.response.text)
+                )
+            except Exception as e:
+                logger.error(f"Credential validation failed: {e}")
+                raise ToolProviderCredentialValidationError(
+                    f"Failed to authenticate with Cognee server: {str(e)}"
+                )
+
+            if creds["api_key"]:
+                try:
                     response = client.get(
-                        f"{base_url}/api/v1/datasets",
-                        headers={"X-Api-Key": api_key},
-                        timeout=TIMEOUT,
+                        f"{base_url}/api/v1/datasets", headers=headers, timeout=TIMEOUT
                     )
-                    logger.info(f"API key check response: {response.status_code}")
-                    if response.is_error:
-                        raise ToolProviderCredentialValidationError(
-                            api_key_error_message(response.status_code, response.text)
-                        )
-                else:
-                    response = client.post(
-                        f"{base_url}/api/v1/auth/login",
-                        data={"username": user_email, "password": user_password},
-                        timeout=TIMEOUT,
+                except Exception as e:
+                    raise ToolProviderCredentialValidationError(
+                        f"Failed to authenticate with Cognee server: {str(e)}"
                     )
-                    logger.info(f"Login response: {response.status_code}")
-                    if response.is_error:
-                        raise ToolProviderCredentialValidationError(
-                            login_error_message(response.status_code, response.text)
-                        )
-                    if "access_token" not in response.json():
-                        raise ToolProviderCredentialValidationError(
-                            "Login succeeded but no access token was returned"
-                        )
-        except ToolProviderCredentialValidationError:
-            raise
-        except Exception as e:
-            logger.error(f"Credential validation failed: {e}")
-            raise ToolProviderCredentialValidationError(
-                f"Failed to authenticate with Cognee server: {str(e)}"
-            )
+                logger.info(f"API key check response: {response.status_code}")
+                if response.is_error:
+                    raise ToolProviderCredentialValidationError(
+                        api_key_error_message(response.status_code, response.text)
+                    )

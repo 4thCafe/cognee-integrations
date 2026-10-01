@@ -1,7 +1,6 @@
 from collections.abc import Generator
 from typing import Any
 
-import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 from tools.cognee_client import (
@@ -9,6 +8,7 @@ from tools.cognee_client import (
     authorize,
     base_url_of,
     error_text,
+    make_client,
     parse_json,
     split_csv,
 )
@@ -63,7 +63,7 @@ class ImproveTool(Tool):
         body = build_body(tool_parameters)
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+            with make_client() as client:
                 response = client.post(
                     f"{base_url}/api/v1/improve",
                     json=body,

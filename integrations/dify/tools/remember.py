@@ -1,3 +1,4 @@
+import hashlib
 import time
 from collections.abc import Generator
 from typing import Any
@@ -10,6 +11,7 @@ from tools.cognee_client import (
     authorize,
     base_url_of,
     error_text,
+    make_client,
     parse_json,
     split_csv,
 )
@@ -21,9 +23,16 @@ def build_form(tool_parameters: dict[str, Any]) -> dict[str, Any]:
     """Multipart/form fields for ``POST /api/v1/remember``.
 
     The text goes in ``raw_data`` so the server names the document by its
-    content hash; no upload filename is involved.
+    content hash; no upload filename is involved. The request is always
+    submitted as a background run: a blocking remember can exceed the HTTP
+    timeout of Cognee Cloud's gateway on larger inputs. Waiting for the build
+    is the plugin's job (see ``wait_for_build``), unless the caller asked to
+    return immediately.
     """
-    form: dict[str, Any] = {"raw_data": [tool_parameters["text_data"]]}
+    form: dict[str, Any] = {
+        "raw_data": [tool_parameters["text_data"]],
+        "run_in_background": "true",
+    }
 
     dataset_name = tool_parameters.get("dataset_name", "")
     dataset_id = tool_parameters.get("dataset_id", "")
@@ -44,9 +53,6 @@ def build_form(tool_parameters: dict[str, Any]) -> dict[str, Any]:
     if custom_prompt:
         form["custom_prompt"] = custom_prompt
 
-    if as_bool(tool_parameters.get("run_in_background", "false")):
-        form["run_in_background"] = "true"
-
     self_improvement = tool_parameters.get("self_improvement", "default")
     if self_improvement in ("true", "false"):
         form["self_improvement"] = self_improvement
@@ -54,123 +60,160 @@ def build_form(tool_parameters: dict[str, Any]) -> dict[str, Any]:
     return form
 
 
-# --- waiting for an asynchronous build ------------------------------------------
+# --- waiting for the build -----------------------------------------------------------
 #
-# Some deployments (Cognee Cloud) build the graph asynchronously even for a
-# blocking request: ``POST /remember`` answers ``status: "running"`` with no
-# pipeline run id. The dataset-level status cannot be trusted right after the
-# call, because a dataset that was cognified before still reads "completed".
-# So the wait keys on the per-item completion stamps instead: the new item has
-# to appear (total grows past the baseline taken before the call) and nothing
-# may be pending. A dataset-level status is only the fallback for servers
-# without the per-item route.
+# A background remember answers before anything is ingested and carries no
+# pipeline run id, and the dataset-level status still shows the previous run
+# as completed, so neither can be trusted on its own. Two facts the server
+# does expose make completion provable:
+#
+# * ``GET /api/v1/datasets/graph-summary`` reports each dataset's latest
+#   cognify ``pipelineRunId``. A value different from the one recorded before
+#   the call is this request's run; its ``GET /api/v1/datasets/status`` then
+#   says whether it finished.
+# * Raw text is stored under the name ``text_<md5 of the utf-8 text>.txt``.
+#   When that item already exists before the call the content is deduplicated
+#   and nothing new will be built: the memory already holds it.
+#
+# When neither fact can be established before the deadline the tool reports
+# ``running`` instead of guessing.
 
 POLL_INTERVAL = 3.0
-POLL_TIMEOUT = REMEMBER_TIMEOUT
-# How long "nothing pending, but no new item" is tolerated before it is taken
-# as "the content was already there" (identical text is deduplicated by hash).
-DEDUP_GRACE = 20.0
-TERMINAL_STATUSES = {
+WAIT_TIMEOUT = 3600.0
+STATUS_OF = {
     "DATASET_PROCESSING_COMPLETED": "completed",
     "DATASET_PROCESSING_ERRORED": "errored",
 }
 
 
-def dataset_item_count(
-    client: httpx.Client, base_url: str, headers: dict[str, str], dataset_id: str
-) -> int | None:
-    """Number of data items in the dataset, or None when the route is unavailable."""
-    response = client.get(
-        f"{base_url}/api/v1/datasets/{dataset_id}/processing-status",
-        headers=headers,
-        timeout=60,
-    )
-    if response.status_code == 404:
-        return None
-    response.raise_for_status()
-    body = parse_json(response, default={})
-    return int(body.get("total", 0)) if isinstance(body, dict) else None
+def text_item_name(text: str) -> str:
+    return "text_" + hashlib.md5(text.encode("utf-8")).hexdigest() + ".txt"
 
 
-def resolve_dataset_id(
-    client: httpx.Client, base_url: str, headers: dict[str, str], dataset_name: str
-) -> str:
+def resolve_dataset_id(client: httpx.Client, base_url: str, headers: dict, name: str) -> str:
     """Dataset id for a name the caller owns, or "" when it does not exist yet."""
     response = client.get(f"{base_url}/api/v1/datasets", headers=headers, timeout=60)
     response.raise_for_status()
-    body = parse_json(response, default=[])
-    for dataset in body if isinstance(body, list) else []:
-        if isinstance(dataset, dict) and dataset.get("name") == dataset_name:
+    for dataset in response.json():
+        if isinstance(dataset, dict) and dataset.get("name") == name:
             return str(dataset.get("id", ""))
     return ""
 
 
-def wait_for_dataset(
+def latest_run_id(
+    client: httpx.Client, base_url: str, headers: dict, dataset_id: str
+) -> str | None:
+    """The dataset's latest cognify pipeline run id, or None when it has none yet."""
+    response = client.get(
+        f"{base_url}/api/v1/datasets/graph-summary",
+        params={"dataset_ids": dataset_id},
+        headers=headers,
+        timeout=60,
+    )
+    if response.is_error:
+        # 409 "summary could not be built" is transient on a fresh dataset.
+        return None
+    for row in response.json() or []:
+        if (
+            isinstance(row, dict)
+            and str(row.get("datasetId") or row.get("dataset_id")) == dataset_id
+        ):
+            run_id = row.get("pipelineRunId") or row.get("pipeline_run_id")
+            return str(run_id) if run_id else None
+    return None
+
+
+def dataset_status(
+    client: httpx.Client, base_url: str, headers: dict, dataset_id: str
+) -> str | None:
+    """Raw status of the dataset's latest cognify run (``DATASET_PROCESSING_*``), or None."""
+    response = client.get(
+        f"{base_url}/api/v1/datasets/status",
+        params={"dataset": dataset_id},
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    body = response.json()
+    raw = body.get(dataset_id) if isinstance(body, dict) else None
+    if isinstance(raw, dict):
+        raw = raw.get("cognify_pipeline") or next(iter(raw.values()), None)
+    return str(raw) if raw is not None else None
+
+
+def has_text_item(
+    client: httpx.Client, base_url: str, headers: dict, dataset_id: str, text: str
+) -> bool:
+    """True when the dataset already holds a raw-text item with this exact content."""
+    wanted = text_item_name(text)
+    response = client.get(
+        f"{base_url}/api/v1/datasets/{dataset_id}/data", headers=headers, timeout=60
+    )
+    if response.is_error:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("name") == wanted for item in response.json() or []
+    )
+
+
+def wait_for_build(
     client: httpx.Client,
     base_url: str,
-    headers: dict[str, str],
+    headers: dict,
     dataset_id: str,
+    baseline_run_id: str | None,
     *,
-    baseline_total: int | None = 0,
     sleep=time.sleep,
-    deadline: float | None = None,
     now=time.monotonic,
+    timeout: float = WAIT_TIMEOUT,
 ) -> str:
-    """Wait until the dataset's build has finished.
+    """Poll until a cognify run newer than ``baseline_run_id`` reaches a terminal state.
 
     Returns ``"completed"``, ``"errored"``, or ``"running"`` when the deadline
-    passes first. ``baseline_total`` is the item count before the remember
-    call (None when the per-item route is unavailable, which selects the
-    dataset-status fallback).
+    passes without proof. A completed status is only accepted together with a
+    run id that differs from the baseline, so the previous run's completion is
+    never mistaken for this one.
     """
-    started = now()
-    end = deadline if deadline is not None else started + POLL_TIMEOUT
-    use_items = baseline_total is not None
-    seen_in_progress = False
+    deadline = now() + timeout
     while True:
-        if use_items:
-            response = client.get(
-                f"{base_url}/api/v1/datasets/{dataset_id}/processing-status",
-                headers=headers,
-                timeout=60,
-            )
-            if response.status_code == 404:
-                use_items = False
-                continue
-            response.raise_for_status()
-            body = parse_json(response, default={})
-            total = int(body.get("total", 0))
-            pending = int(body.get("pending", 0))
-            if pending == 0 and total > baseline_total:
-                return "completed"
-            if pending == 0 and now() - started >= DEDUP_GRACE:
-                # Nothing new arrived and nothing is pending: the content was
-                # already in the dataset (deduplicated), so the memory is ready.
-                return "completed"
-        else:
-            response = client.get(
-                f"{base_url}/api/v1/datasets/status",
-                params={"dataset": dataset_id},
-                headers=headers,
-                timeout=60,
-            )
-            response.raise_for_status()
-            body = parse_json(response, default={})
-            raw = body.get(dataset_id) if isinstance(body, dict) else None
-            if isinstance(raw, dict):
-                raw = raw.get("cognify_pipeline") or next(iter(raw.values()), None)
-            status = TERMINAL_STATUSES.get(str(raw))
-            if status == "errored":
-                return status
-            if status == "completed" and (seen_in_progress or now() - started >= DEDUP_GRACE):
-                # A dataset-level "completed" right after the call may be the
-                # previous run; accept it once a run was observed or after the grace.
-                return status
-            if raw is not None and status is None:
-                seen_in_progress = True
-        if now() >= end:
+        run_id = latest_run_id(client, base_url, headers, dataset_id)
+        if run_id is not None and run_id != baseline_run_id:
+            outcome = STATUS_OF.get(dataset_status(client, base_url, headers, dataset_id) or "")
+            if outcome:
+                return outcome
+        if now() >= deadline:
             return "running"
         sleep(POLL_INTERVAL)
+
+
+def summarize(result: dict[str, Any], *, waited: bool, deduplicated: bool) -> str:
+    status = str(result.get("status", "completed"))
+    dataset_name = result.get("dataset_name", "")
+    dataset_id = result.get("dataset_id", "")
+    if deduplicated:
+        return (
+            f"This text is already remembered in dataset '{dataset_name}' (id: {dataset_id}); "
+            "nothing new to build, the memory is ready to recall."
+        )
+    if status == "running":
+        if waited:
+            return (
+                f"The memory for dataset '{dataset_name}' (id: {dataset_id}) was still being "
+                "built when the wait timed out; it is not ready to recall yet."
+            )
+        return (
+            f"Remember started in the background for dataset '{dataset_name}' (id: {dataset_id}). "
+            "Poll GET /api/v1/datasets/status before recalling."
+        )
+    if status == "errored":
+        return (
+            f"Remember failed while building the memory for dataset '{dataset_name}' "
+            f"(id: {dataset_id}): {result.get('error') or 'see server logs'}"
+        )
+    return (
+        f"Remembered the text in dataset '{dataset_name}' (id: {dataset_id}); "
+        "the memory is ready to recall."
+    )
 
 
 class RememberTool(Tool):
@@ -184,21 +227,24 @@ class RememberTool(Tool):
             return
 
         form = build_form(tool_parameters)
-        wants_background = as_bool(tool_parameters.get("run_in_background", "false"))
+        wait = not as_bool(tool_parameters.get("run_in_background", "false"))
+        text = tool_parameters["text_data"]
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+            with make_client() as client:
                 headers = authorize(client, self.runtime)
 
-                # Baseline for the asynchronous-build wait: how many items the
-                # dataset holds before this call. Only needed for blocking runs.
-                baseline_total: int | None = 0
-                if not wants_background:
+                # Evidence recorded before the call: the dataset's current run id
+                # and whether this exact text is already stored in it.
+                baseline_run_id: str | None = None
+                deduplicated = False
+                if wait:
                     known_id = tool_parameters.get("dataset_id", "") or resolve_dataset_id(
                         client, base_url, headers, tool_parameters.get("dataset_name", "")
                     )
                     if known_id:
-                        baseline_total = dataset_item_count(client, base_url, headers, known_id)
+                        baseline_run_id = latest_run_id(client, base_url, headers, known_id)
+                        deduplicated = has_text_item(client, base_url, headers, known_id, text)
 
                 response = client.post(
                     f"{base_url}/api/v1/remember",
@@ -208,52 +254,36 @@ class RememberTool(Tool):
                 )
                 response.raise_for_status()
                 result = parse_json(response)
-
-                status = str(result.get("status", "completed"))
-                dataset_id = str(result.get("dataset_id") or tool_parameters.get("dataset_id", ""))
-                dataset_name = str(
-                    result.get("dataset_name") or tool_parameters.get("dataset_name", "")
-                )
-                pipeline_run_id = str(result.get("pipeline_run_id") or "")
-                items_processed = int(result.get("items_processed") or 0)
+                result.setdefault("dataset_id", tool_parameters.get("dataset_id", ""))
+                result.setdefault("dataset_name", tool_parameters.get("dataset_name", ""))
+                dataset_id = str(result.get("dataset_id") or "")
 
                 waited = False
-                if status == "running" and not wants_background and dataset_id:
-                    status = wait_for_dataset(
-                        client, base_url, headers, dataset_id, baseline_total=baseline_total
-                    )
-                    result["status"] = status
-                    waited = True
+                if wait and dataset_id:
+                    if deduplicated:
+                        result["status"] = "completed"
+                    elif result.get("status") == "running":
+                        result["status"] = wait_for_build(
+                            client, base_url, headers, dataset_id, baseline_run_id
+                        )
+                        waited = True
+                status = str(result.get("status", "completed"))
 
                 yield self.create_json_message(result)
                 yield self.create_variable_message("status", status)
                 yield self.create_variable_message("dataset_id", dataset_id)
-                yield self.create_variable_message("dataset_name", dataset_name)
-                yield self.create_variable_message("pipeline_run_id", pipeline_run_id)
-                yield self.create_variable_message("items_processed", items_processed)
-
-                if status == "running":
-                    summary = (
-                        f"Remember started in the background for dataset '{dataset_name}' "
-                        f"(id: {dataset_id}, pipeline run: {pipeline_run_id})."
-                    )
-                elif status == "errored":
-                    summary = (
-                        f"Remember failed while building the memory for dataset "
-                        f"'{dataset_name}' (id: {dataset_id}): "
-                        f"{result.get('error') or 'see server logs'}"
-                    )
-                elif waited:
-                    summary = (
-                        f"Remembered the data in dataset '{dataset_name}' (id: {dataset_id}); "
-                        "the memory was built asynchronously and is ready to recall."
-                    )
-                else:
-                    summary = (
-                        f"Remembered {items_processed} item(s) in dataset '{dataset_name}' "
-                        f"(id: {dataset_id}); the memory is ready to recall."
-                    )
-                yield self.create_text_message(summary)
+                yield self.create_variable_message(
+                    "dataset_name", str(result.get("dataset_name") or "")
+                )
+                yield self.create_variable_message(
+                    "pipeline_run_id", str(result.get("pipeline_run_id") or "")
+                )
+                yield self.create_variable_message(
+                    "items_processed", int(result.get("items_processed") or 0)
+                )
+                yield self.create_text_message(
+                    summarize(result, waited=waited, deduplicated=deduplicated)
+                )
         except Exception as e:
             error_msg = error_text(e, "Failed to remember")
             yield self.create_json_message({"error": error_msg})

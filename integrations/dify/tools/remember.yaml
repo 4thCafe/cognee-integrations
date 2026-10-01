@@ -8,10 +8,10 @@ identity:
     ja_JP: "記憶"
 description:
   human:
-    en_US: "Ingest text and build the memory in one step (add + cognify) on your local Cognee server"
-    zh_Hans: "在本地 Cognee 服务器上一步完成文本摄取并构建内存（add + cognify）"
-    pt_BR: "Ingerir texto e construir a memória em uma única etapa (add + cognify) no seu servidor Cognee local"
-    ja_JP: "ローカル Cognee サーバーでテキストの取り込みとメモリ構築を一度に実行（add + cognify）"
+    en_US: "Ingest text and build the memory in one step (add + cognify) on your Cognee server"
+    zh_Hans: "在Cognee 服务器上一步完成文本摄取并构建内存（add + cognify）"
+    pt_BR: "Ingerir texto e construir a memória em uma única etapa (add + cognify) no seu servidor Cognee"
+    ja_JP: "Cognee サーバーでテキストの取り込みとメモリ構築を一度に実行（add + cognify）"
   llm: "Store text in Cognee memory and make it searchable in one call. Combines adding data to a dataset and building the knowledge graph. Use this instead of Add Data followed by Cognify when you just want the text remembered. Blocks until the memory is built unless run_in_background is true."
 parameters:
   - name: text_data
@@ -114,11 +114,11 @@ parameters:
       pt_BR: "Executar em Segundo Plano"
       ja_JP: "バックグラウンド実行"
     human_description:
-      en_US: "Return immediately with a pipeline run ID instead of waiting for the memory to be built"
-      zh_Hans: "立即返回流水线运行 ID，而不等待内存构建完成"
-      pt_BR: "Retornar imediatamente com o ID da execução do pipeline em vez de aguardar a construção da memória"
-      ja_JP: "メモリ構築を待たず、パイプライン実行 ID をすぐに返す"
-    llm_description: "Set to true to return immediately; the memory is built server-side and may not be recallable right away"
+      en_US: "Return as soon as the server accepted the text instead of waiting until the memory is built. The build always runs server-side; by default this tool waits for it to finish so Recall can follow."
+      zh_Hans: "服务器接受文本后立即返回，而不等待内存构建完成。构建始终在服务器端进行；默认情况下此工具会等待其完成，以便后续 Recall。"
+      pt_BR: "Retornar assim que o servidor aceitar o texto, em vez de aguardar a construção da memória. A construção sempre ocorre no servidor; por padrão esta ferramenta aguarda a conclusão para que o Recall possa seguir."
+      ja_JP: "メモリ構築の完了を待たず、サーバーがテキストを受け付けた時点で返します。構築は常にサーバー側で行われ、デフォルトではこのツールは完了を待ってから Recall に進めます。"
+    llm_description: "Set to true to return immediately without waiting for the memory to be built; it may not be recallable right away"
     form: form
     options:
       - value: "false"

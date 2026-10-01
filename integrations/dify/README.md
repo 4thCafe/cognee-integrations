@@ -37,10 +37,12 @@ Ingest text and build the memory in one call (add + cognify, optionally followed
 - **Node Set** (optional) — Comma-separated node set names for graph organization.
 - **Session ID** (optional) — Session to attribute the memory to, so Recall's session scope can find it. Cannot be combined with an ontology.
 - **Custom Prompt** (optional) — Custom prompt for entity extraction.
-- **Run in Background** (optional, default: false) — Return immediately with a pipeline run ID.
+- **Run in Background** (optional, default: false) — Return as soon as the server accepted the text. By default the tool submits the build server-side and waits until the dataset's new cognify run has finished, so a following Recall sees the memory; identical text already in the dataset is recognised and returns at once.
 - **Self Improvement** (optional, default: server default) — Run the improve loop after the memory is built.
 
 **Outputs:** `status`, `dataset_id`, `dataset_name`, `pipeline_run_id`, `items_processed`
+
+> On Cognee Cloud the build always runs asynchronously (the server defaults `run_in_background` to true), so Remember submits in the background on every deployment and waits for the dataset's new cognify run itself. Run in Background = true skips that wait.
 
 > Remember does not return a data ID. If a workflow later needs **Delete Data**, **Update Data** or **Forget** by data ID, ingest with **Add Data** instead, or look the ID up with **Get Dataset Data**.
 
@@ -383,6 +385,16 @@ Click **Save**. The plugin validates by performing a health check and then check
 #### Step 5: Test the tools
 
 Create a Dify workflow or use Agent mode to test. A good sequence: Remember → Recall → Remember Entry → Recall with the same Session ID → Improve → Forget.
+
+### Migrating from the self-hosted plugin (`cognee_sdk`)
+
+Earlier versions of this repository shipped a second, unpublished plugin named **Cognee (Self-Hosted)** with the provider id `topoteretes/cognee_sdk`. This plugin replaces it: it supports the same email and password login, the same tools with the same parameters and output variables, and adds the API-key method and the cloud-only tools.
+
+Dify has no provider rename migration, so an installed `cognee_sdk` keeps working untouched but receives no updates. To move:
+
+1. Install **Cognee** alongside it and configure the same server URL and credentials (or an API key).
+2. In each workflow, replace every `cognee_sdk` tool node with the same tool from **Cognee**. Parameter names and output variables are unchanged, so the surrounding wiring stays valid once the node is re-pointed. Agent apps: swap the tool in the agent's tool list.
+3. Uninstall `cognee_sdk`.
 
 ### Links
 

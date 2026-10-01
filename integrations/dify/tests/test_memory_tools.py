@@ -1,45 +1,8 @@
-"""Request shapes and result formatting for the cognee 1.6 memory tools."""
-
-import sys
-from pathlib import Path
+"""Request shapes, result formatting and mocked invocations of the memory tools."""
 
 import httpx
 import pytest
-import yaml
-
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
-
-NEW_TOOLS = ["remember", "recall", "remember_entry", "forget", "improve"]
-
-
-# --- registration ---------------------------------------------------------------
-
-
-def test_provider_registers_every_tool_yaml():
-    provider = yaml.safe_load((PLUGIN_ROOT / "provider" / "cognee.yaml").read_text())
-    registered = set(provider["tools"])
-    on_disk = {f"tools/{p.name}" for p in (PLUGIN_ROOT / "tools").glob("*.yaml")}
-    assert registered == on_disk
-
-
-@pytest.mark.parametrize("name", NEW_TOOLS)
-def test_tool_yaml_points_at_its_source(name):
-    spec = yaml.safe_load((PLUGIN_ROOT / "tools" / f"{name}.yaml").read_text())
-    assert spec["identity"]["name"] == name
-    assert spec["extra"]["python"]["source"] == f"tools/{name}.py"
-    assert (PLUGIN_ROOT / "tools" / f"{name}.py").is_file()
-    for param in spec["parameters"]:
-        assert set(param["label"]) == {"en_US", "zh_Hans", "pt_BR", "ja_JP"}, param["name"]
-
-
-def test_forget_everything_is_form_only():
-    spec = yaml.safe_load((PLUGIN_ROOT / "tools" / "forget.yaml").read_text())
-    everything = next(p for p in spec["parameters"] if p["name"] == "everything")
-    assert everything["form"] == "form"
-    assert everything["default"] == "false"
-
+from conftest import Runtime, invoke, json_body, text_of, variables
 
 # --- shared client helpers -----------------------------------------------------
 
@@ -69,6 +32,21 @@ def test_error_text_prefers_the_server_body():
     assert error_text(RuntimeError("boom"), "Recall failed") == "Recall failed: boom"
 
 
+def test_parse_json_never_turns_garbage_into_success():
+    from tools.cognee_client import parse_json
+
+    ok = httpx.Response(200, json={"status": "completed"})
+    assert parse_json(ok) == {"status": "completed"}
+
+    html = httpx.Response(200, text="<html>gateway timeout</html>")
+    with pytest.raises(ValueError, match="non-JSON response \\(HTTP 200\\): <html>gateway timeout"):
+        parse_json(html)
+
+    empty = httpx.Response(200, text="")
+    with pytest.raises(ValueError, match="non-JSON response \\(HTTP 200\\)$"):
+        parse_json(empty)
+
+
 # --- remember --------------------------------------------------------------------
 
 
@@ -76,7 +54,11 @@ def test_remember_form_uses_raw_data_and_omits_unset_fields():
     from tools.remember import build_form
 
     form = build_form({"text_data": "Einstein was born in Ulm.", "dataset_name": "notes"})
-    assert form == {"raw_data": ["Einstein was born in Ulm."], "datasetName": "notes"}
+    assert form == {
+        "raw_data": ["Einstein was born in Ulm."],
+        "run_in_background": "true",
+        "datasetName": "notes",
+    }
 
 
 def test_remember_form_carries_every_option():
@@ -89,7 +71,6 @@ def test_remember_form_carries_every_option():
             "node_set": "people, places",
             "session_id": "conv-1",
             "custom_prompt": "Extract people.",
-            "run_in_background": "true",
             "self_improvement": "false",
         }
     )
@@ -97,7 +78,6 @@ def test_remember_form_carries_every_option():
     assert form["node_set"] == ["people", "places"]
     assert form["session_id"] == "conv-1"
     assert form["custom_prompt"] == "Extract people."
-    assert form["run_in_background"] == "true"
     assert form["self_improvement"] == "false"
     assert "datasetName" not in form
 
@@ -107,7 +87,6 @@ def test_remember_form_leaves_self_improvement_to_the_server_by_default():
 
     form = build_form({"text_data": "t", "dataset_name": "n", "self_improvement": "default"})
     assert "self_improvement" not in form
-    assert "run_in_background" not in form
 
 
 # --- recall ----------------------------------------------------------------------
@@ -153,15 +132,6 @@ def test_recall_body_carries_scope_session_and_datasets():
     assert body["onlyContext"] is True
     assert body["includeReferences"] is True
     assert body["stream"] is False
-
-
-def test_recall_headers_ask_for_json():
-    from tools.cognee_client import auth_headers
-
-    headers = auth_headers({"api_key": "tok"}, client=None, json=True)
-    assert headers["Accept"] == "application/json"
-    assert headers["X-Api-Key"] == "tok"
-    assert headers["Content-Type"] == "application/json"
 
 
 def test_recall_formats_mixed_sources_and_picks_the_graph_answer():
@@ -309,47 +279,16 @@ def test_improve_body_and_stage_summary():
     assert summarize_stages({"status": "running"}) == (0, 0)
 
 
-# --- end to end through the Tool class -------------------------------------------
+# --- mocked invocations through the Tool classes ---------------------------------
 
 
-class _Runtime:
-    credentials = {
-        "base_url": "http://localhost:8000/",
-        "user_email": "default_user@example.com",
-        "user_password": "default_password",
-    }
+def test_recall_invocation_with_mocked_http(fake_cognee):
+    from tools.recall import RecallTool
 
-
-class _FakeClient:
-    """Stands in for httpx.Client: records the recall request and answers it."""
-
-    def __init__(self, log: list, reply: httpx.Response):
-        self._log = log
-        self._reply = reply
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def post(self, url, **kwargs):
-        self._log.append((url, kwargs))
-        request = httpx.Request("POST", url)
-        if url.endswith("/api/v1/auth/login"):
-            return httpx.Response(200, json={"access_token": "tok"}, request=request)
-        self._reply.request = request
-        return self._reply
-
-
-def test_recall_tool_end_to_end(monkeypatch):
-    import tools.recall as recall_module
-    from dify_plugin.entities.tool import ToolInvokeMessage
-
-    log: list = []
-    reply = httpx.Response(
-        200,
-        json=[
+    fake_cognee.on(
+        "POST",
+        "/api/v1/recall",
+        json_body=[
             {
                 "source": "graph",
                 "text": "Ulm.",
@@ -358,25 +297,55 @@ def test_recall_tool_end_to_end(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(recall_module.httpx, "Client", lambda *a, **k: _FakeClient(log, reply))
+    messages = invoke(RecallTool, Runtime(), {"query": "Where?", "session_id": "conv-1"})
 
-    tool = recall_module.RecallTool.__new__(recall_module.RecallTool)
-    tool.runtime = _Runtime()
-    tool.response_type = ToolInvokeMessage
-    messages = list(tool._invoke({"query": "Where?", "session_id": "conv-1"}))
+    request = fake_cognee.calls("POST", "/api/v1/recall")[0]
+    assert request.headers["X-Api-Key"] == "key-1"
+    assert request.headers["Accept"] == "application/json"
+    body = json_body(request)
+    assert body["sessionId"] == "conv-1"
+    assert body["stream"] is False
 
-    url, kwargs = log[-1]
-    assert url == "http://localhost:8000/api/v1/recall"
-    assert kwargs["json"]["sessionId"] == "conv-1"
-    assert kwargs["json"]["stream"] is False
-    assert kwargs["headers"]["Accept"] == "application/json"
+    out = variables(messages)
+    assert out["results_count"] == 1
+    assert out["answer"] == "Ulm."
+    assert "1. Ulm." in out["results_text"]
 
-    variables = {
-        m.message.variable_name: m.message.variable_value
-        for m in messages
-        if m.type == ToolInvokeMessage.MessageType.VARIABLE
+
+def test_forget_invocation_reports_a_malformed_body_as_failure(fake_cognee):
+    from tools.forget import ForgetTool
+
+    fake_cognee.on(
+        "POST", "/api/v1/forget", lambda r: httpx.Response(200, text="<html>oops</html>")
+    )
+    messages = invoke(ForgetTool, Runtime(), {"dataset_name": "notes"})
+    assert variables(messages)["succeeded"] is False
+    assert "non-JSON response" in text_of(messages)
+
+
+def test_forget_invocation_success(fake_cognee):
+    from tools.forget import ForgetTool
+
+    fake_cognee.on("POST", "/api/v1/forget", json_body={"deleted": True})
+    messages = invoke(ForgetTool, Runtime(), {"dataset_id": "ds-1", "data_id": "d-1"})
+    assert json_body(fake_cognee.calls("POST", "/api/v1/forget")[0]) == {
+        "memoryOnly": False,
+        "everything": False,
+        "datasetId": "ds-1",
+        "dataId": "d-1",
     }
-    assert variables["results_count"] == 1
-    assert variables["answer"] == "Ulm."
-    assert "[graph]" not in variables["results_text"]
-    assert "1. Ulm." in variables["results_text"]
+    assert variables(messages)["succeeded"] is True
+    assert "Forgot data item 'd-1' in dataset 'ds-1'." in text_of(messages)
+
+
+def test_delete_dataset_invocation_with_login_credentials(fake_cognee):
+    from conftest import login_ok
+    from tools.delete_dataset import DeleteDatasetTool
+
+    fake_cognee.on("POST", "/api/v1/auth/login", login_ok)
+    fake_cognee.on("DELETE", "/api/v1/datasets/ds-1", lambda r: httpx.Response(200))
+    runtime = Runtime(api_key="", user_email="u@e", user_password="p")
+    messages = invoke(DeleteDatasetTool, runtime, {"dataset_id": "ds-1"})
+    delete = fake_cognee.calls("DELETE", "/api/v1/datasets/ds-1")[0]
+    assert delete.headers["Authorization"] == "Bearer tok"
+    assert variables(messages)["succeeded"] is True

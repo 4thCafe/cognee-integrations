@@ -8,10 +8,10 @@ identity:
     ja_JP: "忘却"
 description:
   human:
-    en_US: "Forget a data item, a dataset, or only its memory on your local Cognee server"
-    zh_Hans: "在本地 Cognee 服务器上遗忘某个数据项、整个数据集或仅其内存"
-    pt_BR: "Esquecer um item de dados, um dataset ou apenas sua memória no seu servidor Cognee local"
-    ja_JP: "ローカル Cognee サーバー上のデータ項目、データセット、またはそのメモリのみを忘却"
+    en_US: "Forget a data item, a dataset, or only its memory on your Cognee server"
+    zh_Hans: "在Cognee 服务器上遗忘某个数据项、整个数据集或仅其内存"
+    pt_BR: "Esquecer um item de dados, um dataset ou apenas sua memória no seu servidor Cognee"
+    ja_JP: "Cognee サーバー上のデータ項目、データセット、またはそのメモリのみを忘却"
   llm: "Remove data from Cognee memory. Give a dataset name or ID to delete the whole dataset, add a data ID to delete one item, or set memory_only to clear the knowledge graph and embeddings while keeping the raw data so it can be cognified again."
 parameters:
   - name: dataset_name

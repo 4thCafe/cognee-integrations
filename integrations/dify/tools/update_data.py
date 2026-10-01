@@ -1,12 +1,17 @@
-import io
-import uuid
 from collections.abc import Generator
 from typing import Any
 
-import httpx
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
-from tools.cognee_client import authorize, base_url_of, error_text, parse_json, split_csv
+from tools.cognee_client import (
+    authorize,
+    base_url_of,
+    error_text,
+    make_client,
+    parse_json,
+    split_csv,
+)
+from tools.ingestion import as_json_message, dataset_form_fields, text_upload
 
 UPDATE_TIMEOUT = 21600
 
@@ -18,20 +23,17 @@ class UpdateDataTool(Tool):
         dataset_id = tool_parameters["dataset_id"]
         data_id = tool_parameters["data_id"]
         text_data = tool_parameters["text_data"]
-        node_set = split_csv(tool_parameters.get("node_set", ""))
-
-        form_data: dict[str, Any] = {}
-        if node_set:
-            form_data["node_set"] = node_set
+        # The update route takes the dataset and data ids as query parameters;
+        # only the node set travels in the form.
+        form_data = dataset_form_fields("", "", split_csv(tool_parameters.get("node_set", "")))
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=True) as client:
-                filename = f"data_{uuid.uuid4().hex[:8]}.txt"
+            with make_client() as client:
                 response = client.patch(
                     f"{base_url}/api/v1/update",
                     params={"data_id": data_id, "dataset_id": dataset_id},
                     headers=authorize(client, self.runtime),
-                    files={"data": (filename, io.BytesIO(text_data.encode("utf-8")), "text/plain")},
+                    files={"data": text_upload(text_data)},
                     data=form_data,
                     timeout=UPDATE_TIMEOUT,
                 )
@@ -39,9 +41,7 @@ class UpdateDataTool(Tool):
                 result = parse_json(response)
 
                 status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-                yield self.create_json_message(
-                    result if isinstance(result, dict) else {"result": result}
-                )
+                yield self.create_json_message(as_json_message(result))
                 yield self.create_variable_message("succeeded", True)
                 yield self.create_variable_message("dataset_id", dataset_id)
                 yield self.create_variable_message("data_id", data_id)

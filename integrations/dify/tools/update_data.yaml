@@ -8,10 +8,10 @@ identity:
     ja_JP: "データ更新"
 description:
   human:
-    en_US: "Update a specific data item in a dataset on your local Cognee server"
-    zh_Hans: "更新本地 Cognee 服务器数据集中的特定数据项"
-    pt_BR: "Atualizar um item de dados específico em um dataset no seu servidor Cognee local"
-    ja_JP: "ローカル Cognee サーバーのデータセット内の特定のデータ項目を更新"
+    en_US: "Update a specific data item in a dataset on your Cognee server"
+    zh_Hans: "更新Cognee 服务器数据集中的特定数据项"
+    pt_BR: "Atualizar um item de dados específico em um dataset no seu servidor Cognee"
+    ja_JP: "Cognee サーバーのデータセット内の特定のデータ項目を更新"
   llm: "Update an existing data item in a Cognee dataset. Replaces the content of an existing document and re-integrates changes into the memory. Requires the dataset ID and data item ID."
 parameters:
   - name: dataset_id
