@@ -15,11 +15,13 @@ Contract:
   * ``cached_readable_datasets`` returns the rows: a fresh cache without the
     network, a stale one refreshed, the stale rows kept when the refresh fails,
     and never a listing fetched for another server/identity;
-  * the hook appends the hint on every prompt the server ANSWERED — hits or
-    not, since graph retrieval always returns something and only the model
-    can judge whether it answers the user — and never when nothing answered
-    (dead server, open breaker), with a single dataset, or with the knob off;
-    the hint never reaches the header;
+  * the hook appends the hint on the session's FIRST prompt the server
+    ANSWERED — hit or not, since graph retrieval always returns something and
+    only the model can judge whether it answers the user — and again on any
+    later prompt memory answered with nothing (SDK-904: the block is static
+    text, so repeating it on every hit only cost tokens); never when nothing
+    answered (dead server, open breaker), with a single dataset, or with the
+    knob off; the hint never reaches the header;
   * ``list-datasets.py`` marks the active dataset and can drop it.
 
 Both hook suites carry the flow identically.
@@ -250,6 +252,22 @@ def test_hits_still_offer_the_other_datasets(lookup, monkeypatch):
     assert "Relevant context from this session's memory" in ctx
     assert "Other Cognee datasets you can search" in ctx
     assert "does not answer it, do not conclude that memory has nothing" in ctx
+
+
+def test_a_hit_on_a_later_turn_does_not_repeat_the_hint(lookup, monkeypatch):
+    """The block is static text the model keeps from the first turn; repeating
+    it on every hit was ~3k chars a prompt for nothing (SDK-904). A later MISS
+    brings it back, that being the moment it is actually needed."""
+    seen = _offer(lookup, monkeypatch)
+    hit = dict(HIT, graph=[{"source": "graph", "content": "found something"}])
+
+    first = drive_recall(lookup, monkeypatch, recall=hit)
+    assert "Other Cognee datasets you can search" in _context(first)
+    second = drive_recall(lookup, monkeypatch, recall=hit)
+    assert "Other Cognee datasets" not in _context(second)
+    assert len(seen) == 1, "the listing is not even consulted on a later hit"
+    third = drive_recall(lookup, monkeypatch, recall=_MISS)
+    assert "Other Cognee datasets you can search" in _context(third)
 
 
 def test_an_errored_graph_scope_still_offers_when_the_code_lane_answered(lookup, monkeypatch):

@@ -135,7 +135,8 @@ def test_a_rate_limited_scope_is_logged_but_earns_no_verdict(lookup, monkeypatch
     assert run.breaker == [], "throttling must not trip the breaker"
     assert sorted(run.calls) == sorted(CODE_SCOPES), run.calls
     errors = [d for e, d in run.events if e == "recall_error"]
-    assert len(errors) == 2 and all("429" in d["error"] for d in errors), errors
+    assert len(errors) == len(CODE_SCOPES), errors
+    assert all("429" in d["error"] for d in errors), errors
 
 
 # ── refused: definitive down, but silent on a cold start ──────────────────────

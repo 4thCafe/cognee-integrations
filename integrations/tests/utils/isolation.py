@@ -44,6 +44,7 @@ ISOLATED_MODULES = (
     "_dataset_access",
     "_proc",
     "_recall_http",
+    "_recall_text",
     "_remember_http",
     "_code_graph",
     "_observer",
