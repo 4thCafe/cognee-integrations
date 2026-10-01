@@ -115,3 +115,116 @@ def test_online_and_buffered_trace_receive_redacted_content(suite, hook_module, 
         assert len(writes) == 1
         serialized = json.dumps(writes[0])
         assert "supersecret" not in serialized and "private.token.value" not in serialized
+
+
+@pytest.mark.parametrize(
+    "tools,name,params,expected",
+    [
+        # Tool(prefix:*) borrows Claude Code's permission spelling (#423).
+        ("Bash(git:*)|Read", "Bash", {"command": "git status"}, True),
+        ("Bash(git:*)|Read", "Bash", {"command": "rg foo src/"}, False),
+        ("Bash(git:*)|Read", "Bash", {"command": "gitx weird"}, False),
+        ("Bash(git:*)|Read", "Bash", {"command": "  git\tlog -1"}, True),
+        ("Bash(git:*)|Read", "Bash", {"command": "git"}, True),
+        ("Bash(git:*)|Read", "Bash", {}, False),
+        ("Bash(git:*)|Read", "Read", {"file_path": "main.py"}, True),
+        ("Bash(git:*)|Read", "Grep", {"pattern": "x"}, False),
+        # A multi-word prefix still ends on a word boundary.
+        ("Bash(git status:*)", "Bash", {"command": "git status --short"}, True),
+        ("Bash(git status:*)", "Bash", {"command": "git log"}, False),
+        # Prefix test, not a shell parser: a compound command matches its first word.
+        ("Bash(git:*)", "Bash", {"command": "cd x && git status"}, False),
+        # Legacy spellings keep their meaning.
+        ("Bash", "Bash", {"command": "rg foo src/"}, True),
+        ("B*", "Bash", {"command": "rg foo src/"}, True),
+        ('["Bash(git:*)", "Edit"]', "Bash", {"command": "git push"}, True),
+        ('["Bash(git:*)", "Edit"]', "Edit", {"file_path": "a.py"}, True),
+        ('["Bash(git:*)", "Edit"]', "Bash", {"command": "ls"}, False),
+    ],
+)
+def test_command_prefix_patterns(policy, monkeypatch, tools, name, params, expected):
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", tools)
+    assert policy.allow_tool(name, params) is expected
+
+
+def test_deny_tools_apply_after_the_allowlist(policy, monkeypatch):
+    monkeypatch.setenv("COGNEE_CAPTURE_DENY_TOOLS", "Bash(rg:*)|Bash(grep:*)|Glob")
+    assert policy.allow_tool("Bash", {"command": "git status"})
+    assert not policy.allow_tool("Bash", {"command": "  rg foo"})
+    assert not policy.allow_tool("Bash", {"command": "grep -r foo ."})
+    assert not policy.allow_tool("Glob", {"pattern": "*.py"})
+    assert policy.allow_tool("Read", {"file_path": "main.py"})
+    # Deny wins over an allowlist entry naming the same call.
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "Bash")
+    assert not policy.allow_tool("Bash", {"command": "rg foo"})
+    assert policy.allow_tool("Bash", {"command": "pytest -q"})
+    # The sensitive-path check still runs after both lists.
+    assert not policy.allow_tool("Bash", {"command": "pytest", "file_path": "/repo/.env"})
+
+
+@pytest.mark.parametrize("pattern", ["Bash(rg)", "Bash()", "Bash(rg:*", "Bash(:*)", "(git:*)"])
+def test_malformed_patterns_fail_loudly(policy, monkeypatch, pattern):
+    """Every misspelling used to match nothing and switch capture off in silence."""
+    assert policy.capture_pattern_error() == ""
+    # The bad entry is rejected even when an earlier entry would have matched.
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", f"Bash(git:*)|{pattern}")
+    with pytest.raises(policy.CapturePatternError):
+        policy.allow_tool("Bash", {"command": "git status"})
+    assert pattern in policy.capture_pattern_error()
+    monkeypatch.delenv("COGNEE_CAPTURE_TOOLS")
+    monkeypatch.setenv("COGNEE_CAPTURE_DENY_TOOLS", pattern)
+    with pytest.raises(policy.CapturePatternError):
+        policy.allow_tool("Read", {"file_path": "a.py"})
+    assert pattern in policy.capture_pattern_error()
+
+
+def test_invalid_pattern_fails_closed_in_the_store_hook(suite, hook_module, monkeypatch):
+    store = hook_module(suite, "store-to-session.py")
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "Bash(rg)")
+    monkeypatch.setattr(store, "_load_session", Mock(side_effect=AssertionError("capture ran")))
+    events = []
+    monkeypatch.setattr(store, "hook_log", lambda event, detail=None: events.append(event))
+    asyncio.run(
+        store._store_tool_call({"tool_name": "Bash", "tool_input": {"command": "git status"}})
+    )
+    assert "capture_tools_invalid" in events
+
+
+def test_invalid_pattern_keeps_the_warmup_buffer(suite, isolated_modules, tmp_path, monkeypatch):
+    """A typo in the allowlist must not cost traces buffered before it was made."""
+    common = isolated_modules(suite, "_plugin_common")
+    bridge = tmp_path / "bridge.json"
+    monkeypatch.setattr(common, "_bridge_file", lambda sid="": bridge)
+    monkeypatch.setattr(common, "_DRAIN_LOCK", tmp_path / "drain.lock")
+    monkeypatch.setattr(common, "_BUFFER_LOCK", tmp_path / "buffer.lock")
+    events = []
+    monkeypatch.setattr(common, "hook_log", lambda ev, detail=None: events.append(ev))
+    sent = []
+    monkeypatch.setattr(
+        common, "remember_entry_via_http", lambda d, s, entry, **k: sent.append(entry) or {}
+    )
+    entry = {"type": "trace", "origin_function": "Bash", "method_params": {"command": "git"}}
+    common.append_warmup_entry("ds", "sid", entry)
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "Bash(rg)")
+    assert common.drain_warmup_entries("ds", "sid") == (0, 1)
+    assert sent == [] and "capture_tools_invalid" in events
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "Bash(git:*)")
+    assert common.drain_warmup_entries("ds", "sid") == (1, 0)
+    assert len(sent) == 1
+
+
+def test_invalid_pattern_is_reported_on_the_next_prompt(suite, isolated_modules, monkeypatch):
+    """The store hook runs async with hidden output; the recall hook carries the notice."""
+    common = isolated_modules(suite, "_plugin_common")
+    assert common.with_base_url_notice({}, "UserPromptSubmit") == {}
+    monkeypatch.setenv("COGNEE_CAPTURE_DENY_TOOLS", "Bash(rg)")
+    output = common.with_base_url_notice({}, "UserPromptSubmit")
+    assert "Bash(rg)" in output["systemMessage"]
+    assert "Bash(rg)" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_malformed_json_list_is_reported_with_its_variable_name(policy, monkeypatch):
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", "[Bash rg]")
+    with pytest.raises(policy.CapturePatternError, match="COGNEE_CAPTURE_TOOLS"):
+        policy.allow_tool("Bash", {"command": "git status"})
+    assert "COGNEE_CAPTURE_TOOLS" in policy.capture_pattern_error()
