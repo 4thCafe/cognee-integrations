@@ -1,6 +1,7 @@
 """Behaviour needed for Cognee Cloud tenants: redirects and background builds."""
 
 import httpx
+import pytest
 from conftest import Runtime, form_fields, invoke, text_of, variables
 
 
@@ -55,11 +56,12 @@ class _Clock:
 class _Server:
     """Scripted answers for the status routes the wait uses; the last value repeats."""
 
-    def __init__(self, runs, statuses, items=(), summary_error=False):
+    def __init__(self, runs, statuses, items=(), summary_error=False, summary_status=409):
         self._runs = list(runs)
         self._statuses = list(statuses)
         self._items = list(items)
         self._summary_error = summary_error
+        self._summary_status = summary_status
         self.calls = []
 
     @staticmethod
@@ -71,7 +73,7 @@ class _Server:
         request = httpx.Request("GET", url)
         if url.endswith("/graph-summary"):
             if self._summary_error:
-                return httpx.Response(409, json={"error": "nope"}, request=request)
+                return httpx.Response(self._summary_status, json={"error": "nope"}, request=request)
             run = self._step(self._runs)
             ds = kwargs["params"]["dataset_ids"]
             rows = [] if run is None else [{"datasetId": ds, "pipelineRunId": run}]
@@ -131,7 +133,7 @@ def test_wait_never_guesses_when_nothing_changes():
     assert not any(u.endswith("/datasets/status") for u in server.calls)
 
 
-def test_wait_tolerates_a_failing_graph_summary():
+def test_wait_tolerates_the_transient_409_from_graph_summary():
     from tools.remember import wait_for_build
 
     server = _Server(runs=[], statuses=["DATASET_PROCESSING_COMPLETED"], summary_error=True)
@@ -140,6 +142,25 @@ def test_wait_tolerates_a_failing_graph_summary():
         server, "http://x", {}, "ds-1", None, sleep=clock.sleep, now=clock.now, timeout=10
     )
     assert status == "running"
+
+
+@pytest.mark.parametrize("code", [500, 403, 401])
+def test_wait_fails_fast_on_persistent_graph_summary_errors(code):
+    from tools.remember import wait_for_build
+
+    server = _Server(runs=[], statuses=[], summary_error=True, summary_status=code)
+    clock = _Clock()
+    with pytest.raises(httpx.HTTPStatusError):
+        wait_for_build(server, "http://x", {}, "ds-1", None, sleep=clock.sleep, now=clock.now)
+    assert len(server.calls) == 1  # no polling loop on a real error
+
+
+def test_wait_explains_a_server_without_graph_summary():
+    from tools.remember import wait_for_build
+
+    server = _Server(runs=[], statuses=[], summary_error=True, summary_status=404)
+    with pytest.raises(RuntimeError, match="no GET /api/v1/datasets/graph-summary route"):
+        wait_for_build(server, "http://x", {}, "ds-1", None, sleep=lambda s: None)
 
 
 def test_pre_call_lookups():

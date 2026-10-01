@@ -110,10 +110,20 @@ def latest_run_id(
         headers=headers,
         timeout=60,
     )
-    if response.is_error:
-        # 409 "summary could not be built" is transient on a fresh dataset.
+    if response.status_code == 409:
+        # The one transient answer: "summary could not be built" on a dataset
+        # whose first run has not produced a graph yet. Anything else is a real
+        # failure (permissions, server error, or a server without this route)
+        # and must not be mistaken for "no run yet".
         return None
-    for row in response.json() or []:
+    if response.status_code == 404:
+        raise RuntimeError(
+            "This Cognee server has no GET /api/v1/datasets/graph-summary route, which "
+            "Remember needs to confirm the build; set Run in Background to true and poll "
+            "GET /api/v1/datasets/status yourself."
+        )
+    response.raise_for_status()
+    for row in parse_json(response) or []:
         if (
             isinstance(row, dict)
             and str(row.get("datasetId") or row.get("dataset_id")) == dataset_id
