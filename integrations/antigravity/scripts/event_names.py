@@ -7,6 +7,7 @@ import os
 EVENT_NAMES = {
     "hook:base_url_changed_mid_session": "endpoint.base_url_changed_mid_session",
     "hook:base_url_notice_failed": "endpoint.base_url_notice_failed",
+    "hook:hook_notice_failed": "notice.failed",
     "hook:switch_sync_timeout": "switch.sync_timeout",
     "hook:sync_worker_detached": "lifecycle.sync_worker_detached",
     "hook:sync_execution_skipped_not_idle": "lifecycle.sync_execution_skipped_not_idle",
@@ -91,6 +92,7 @@ EVENT_NAMES = {
     "hook:buffer_lock_error": "buffer.lock_error",
     "hook:buffer_lock_release_failed": "buffer.lock_release_failed",
     "hook:buffer_lock_timeout": "buffer.lock_timeout",
+    "hook:capture_tools_invalid": "capture.tools_invalid",
     "hook:code_autoindex": "code.autoindex",
     "hook:code_autoindex_error": "code.autoindex_error",
     "hook:code_lane_armed": "code.lane_armed",
