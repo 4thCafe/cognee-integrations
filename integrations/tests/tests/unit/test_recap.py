@@ -35,7 +35,10 @@ that is what is pinned here:
     refused identity are each one stderr line and exit 1; a failed recall in
     timeline mode still renders the prompt lane and exits 0.
 
-Claude Code only — the other hosts do not ship these skills.
+Claude Code and Codex ship the skills (``Suite.has_recap_skills``); Antigravity
+does not. The script is byte-identical in both trees, so every test here runs
+once per shipping suite; the doctor hint in the stderr lines is the one host
+difference and is pinned below.
 """
 
 from __future__ import annotations
@@ -46,15 +49,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-CLAUDE = "claude-code"
-
 NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
 def recap(suite, hook_module, monkeypatch):
-    if suite.name != CLAUDE:
-        pytest.skip("recap skills ship with the Claude Code plugin only")
+    if not suite.has_recap_skills:
+        pytest.skip("recap skills ship with the Claude Code and Codex plugins only")
     mod = hook_module(suite, "cognee-recap.py")
     # Never touch a real server or launch record from a unit test.
     monkeypatch.setattr(mod, "_local_api_url", lambda: "http://127.0.0.1:1")
@@ -919,15 +920,28 @@ def test_render_timeline_days_tags_and_empty(recap):
 # ---------------------------------------------------------------------------
 
 
-def test_main_unreachable_server_is_one_stderr_line_and_exit_1(recap, monkeypatch, capsys):
+def test_main_unreachable_server_is_one_stderr_line_and_exit_1(recap, suite, monkeypatch, capsys):
     def boom(*_a, **_k):
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr(recap, "_json_http_request", boom)
     assert recap.main(["standup"]) == 1
     err = capsys.readouterr().err
-    assert "unreachable" in err and "cognee-doctor.sh" in err
+    assert "unreachable" in err
+    # The one host difference: the hint names the doctor this tree ships —
+    # Claude Code wraps it as cognee-doctor.sh, Codex exposes doctor.py.
+    doctor = (
+        "cognee-doctor.sh" if (suite.scripts_dir / "cognee-doctor.sh").is_file() else "doctor.py"
+    )
+    assert f"{doctor} --json" in err
     assert err.count("\n") == 1
+
+
+def test_doctor_hint_follows_the_tree(recap, suite):
+    shipped = {p.name for p in suite.scripts_dir.iterdir()}
+    assert "doctor.py" in shipped
+    expected = "cognee-doctor.sh" if "cognee-doctor.sh" in shipped else "doctor.py"
+    assert recap._doctor_hint() == f"{expected} --json shows the mode/URL"
 
 
 @pytest.mark.parametrize(

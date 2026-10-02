@@ -102,6 +102,11 @@ class Suite:
     #: answered prompt, and ``cognee-search.sh --dataset-id`` forcing a foreign dataset to a
     #: graph-only read. claude-code and codex carry it; Antigravity does not.
     has_cross_dataset_search: bool
+    #: Capability: the recap skills (``cognee-standup`` / ``cognee-digest`` /
+    #: ``cognee-timeline``) and the ``cognee-recap.py`` wrapper behind them.
+    #: claude-code and codex ship the same script (the doctor hint follows the
+    #: tree: ``cognee-doctor.sh`` vs ``doctor.py``); Antigravity does not.
+    has_recap_skills: bool
 
 
 CLAUDE = Suite(
@@ -123,6 +128,7 @@ CLAUDE = Suite(
     has_single_submit_improve=True,
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
+    has_recap_skills=True,
 )
 
 CODEX = Suite(
@@ -149,6 +155,7 @@ CODEX = Suite(
     has_single_submit_improve=True,
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
+    has_recap_skills=True,
 )
 
 ANTIGRAVITY = Suite(
@@ -170,6 +177,7 @@ ANTIGRAVITY = Suite(
     has_single_submit_improve=False,
     has_local_sdk_recall=True,
     has_cross_dataset_search=False,
+    has_recap_skills=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]
