@@ -215,11 +215,18 @@ export type CogneePluginConfig = {
   // --- Timeouts ---
   requestTimeoutMs?: number;
   ingestionTimeoutMs?: number;
+  /**
+   * Maximum tokens per chunk when syncing memory files, sent as `chunk_size`
+   * on /remember. 0 (the default) sends nothing, so the server's own default
+   * (4096) applies. /update takes no chunk size, so files updated in place are
+   * chunked by the server default.
+   */
+  chunkSize?: number;
 
   // --- Recall budget + circuit breaker (claude/codex parity) ---
-  /** Per recall HTTP call timeout on the prompt hot path (no retries). Default: 2500 */
+  /** Per recall HTTP call timeout on the prompt hot path (no retries). Default: 10000 */
   recallTimeoutMs?: number;
-  /** Overall wall-clock budget for the recall step per prompt. Default: 4000 */
+  /** Overall wall-clock budget for the recall step per prompt. Default: 12000 */
   recallBudgetMs?: number;
   /** Consecutive breaker-eligible failures (network/timeout/5xx) before the breaker opens. Default: 5 */
   recallBreakerThreshold?: number;

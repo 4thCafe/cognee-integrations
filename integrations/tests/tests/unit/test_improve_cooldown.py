@@ -15,11 +15,16 @@ Contract:
   * ``COGNEE_AUTO_IMPROVE_EVERY=0`` disables the every-N trigger;
   * ``store-to-session``'s background fire skips a throttled session and never
     reaches the server.
+
+On ``has_single_submit_improve`` suites a FAILED attempt arms the same window
+as ``backoff`` (unit/test_improve_single_submit.py); here only the shared
+success-side contract is pinned.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 
 import pytest
@@ -124,13 +129,13 @@ def test_a_new_success_restarts_the_window(pc, monkeypatch):
 
 def test_cooldown_default_and_parsing(pc, monkeypatch):
     monkeypatch.delenv("COGNEE_IMPROVE_COOLDOWN", raising=False)
-    assert pc.improve_cooldown_seconds() == 600.0
+    assert pc.improve_cooldown_seconds() == 1800.0
     monkeypatch.setenv("COGNEE_IMPROVE_COOLDOWN", "90")
     assert pc.improve_cooldown_seconds() == 90.0
     monkeypatch.setenv("COGNEE_IMPROVE_COOLDOWN", "-5")
     assert pc.improve_cooldown_seconds() == 0.0
     monkeypatch.setenv("COGNEE_IMPROVE_COOLDOWN", "soon")
-    assert pc.improve_cooldown_seconds() == 600.0
+    assert pc.improve_cooldown_seconds() == 1800.0
 
 
 def test_auto_improve_every_zero_disables(pc, monkeypatch):
@@ -156,6 +161,34 @@ def store(suite, hook_module, monkeypatch):
     return module
 
 
+def _patch_improve(store, monkeypatch, improves):
+    """Stub the improve seam across suite generations: single-submit suites call
+    ``run_session_improve_detailed`` (dict outcome), the others the boolean
+    ``run_session_improve``. Both record the call the same way."""
+    if hasattr(store, "run_session_improve_detailed"):
+        monkeypatch.setattr(
+            store,
+            "run_session_improve_detailed",
+            lambda *a, **k: improves.append((a, k)) or {"ok": True, "reason": "", "error": ""},
+        )
+    else:
+        monkeypatch.setattr(
+            store, "run_session_improve", lambda *a, **k: improves.append((a, k)) or True
+        )
+
+
+def _fire(store, dataset, session_id, reason):
+    """Call ``_fire_improve_background`` across suite signatures.
+
+    Claude Code and Codex dropped the SDK ``user`` argument with the in-process
+    path (SDK-579); Antigravity still carries it. Pass it only when accepted.
+    """
+    params = inspect.signature(store._fire_improve_background).parameters
+    if "user" in params:
+        return store._fire_improve_background(dataset, session_id, None, reason=reason)
+    return store._fire_improve_background(dataset, session_id, reason=reason)
+
+
 def test_auto_fire_skips_a_throttled_session(store, monkeypatch):
     events, improves = [], []
     monkeypatch.setattr(
@@ -163,11 +196,9 @@ def test_auto_fire_skips_a_throttled_session(store, monkeypatch):
     )
     monkeypatch.setattr(store, "improve_throttle_reason", lambda sid: "cooldown")
     monkeypatch.setattr(store, "http_api_ready", lambda: True)
-    monkeypatch.setattr(
-        store, "run_session_improve", lambda *a, **k: improves.append((a, k)) or True
-    )
+    _patch_improve(store, monkeypatch, improves)
 
-    asyncio.run(store._fire_improve_background("ds", "sid", None, reason="turn_150"))
+    asyncio.run(_fire(store, "ds", "sid", reason="turn_150"))
 
     assert improves == []
     assert events == [
@@ -180,10 +211,8 @@ def test_auto_fire_runs_with_the_auto_trigger_when_not_throttled(store, monkeypa
     monkeypatch.setattr(store, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(store, "improve_throttle_reason", lambda sid: "")
     monkeypatch.setattr(store, "http_api_ready", lambda: True)
-    monkeypatch.setattr(
-        store, "run_session_improve", lambda *a, **k: improves.append((a, k)) or True
-    )
+    _patch_improve(store, monkeypatch, improves)
 
-    asyncio.run(store._fire_improve_background("ds", "sid", None, reason="turn_150"))
+    asyncio.run(_fire(store, "ds", "sid", reason="turn_150"))
 
     assert improves == [(("ds", "sid"), {"trigger": "auto"})]

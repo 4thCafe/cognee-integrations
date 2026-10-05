@@ -14,6 +14,8 @@ Stops cleanly on:
 Survives Antigravity crashes better than foreground hooks.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -29,13 +31,17 @@ from event_names import event_fields
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute. The improve cooldown
-# (COGNEE_IMPROVE_COOLDOWN, 10 minutes) is deliberately NOT a variable here: this
+# (COGNEE_IMPROVE_COOLDOWN, 30 minutes) is deliberately NOT a variable here: this
 # process exits after one bridge and is respawned on the next prompt, so a
 # process-local timestamp reset every turn and the cooldown never gated
 # anything. It lives in the per-session improve state instead
 # (_plugin_common.improve_throttle_reason), shared by every trigger.
 POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
+# Shared agent memory: how often to re-resolve the active dataset's UUIDs and
+# backfill the shared role's grants, so a dataset another plugin created shows
+# up here within this interval rather than at the next session start.
+SHARED_REFRESH_SECONDS = float(os.environ.get("COGNEE_SHARED_MEMORY_REFRESH", "60"))
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "antigravity"
 _ACTIVITY = _PLUGIN_DIR / "activity.ts"
@@ -204,7 +210,9 @@ def _check_llm_key(config: dict) -> None:
             return
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import (
+            clear_llm_state,
             get_session_key,
+            llm_key_owner,
             read_llm_state,
             service_url_is_local,
             write_llm_state,
@@ -213,6 +221,13 @@ def _check_llm_key(config: dict) -> None:
         base_url = str(config.get("base_url") or "")
         if base_url and not service_url_is_local(base_url):
             return  # cloud: the remote server owns its own LLM key
+        # Loopback is not ownership: a server this plugin did not start reads its
+        # key from its own environment, so ours says nothing about it (#371).
+        owner = llm_key_owner(config)
+        if owner:
+            clear_llm_state()
+            _log("llm_key_check_skipped", reason=owner)
+            return
 
         # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
         # honouring another session's timestamp would let a keyless launch's verdict
@@ -295,6 +310,19 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     _check_llm_key(config)
     exit_reason = "loop_complete"
     bridge_disabled = False
+    # First shared-memory refresh one interval in: SessionStart just resolved
+    # everything, so an immediate re-resolve would only repeat its calls.
+    next_shared_refresh = time.time() + SHARED_REFRESH_SECONDS
+
+    def _refresh_shared_memory() -> None:
+        try:
+            from _plugin_common import refresh_shared_memory
+
+            if refresh_shared_memory():
+                _log("shared_memory_refreshed", session=session_id)
+        except Exception as exc:
+            _log("shared_memory_refresh_failed", error=str(exc)[:200])
+
     last_throttle_reason = ""
     known_pair = (session_id, dataset)
 
@@ -350,6 +378,9 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
             break
 
         now = time.time()
+        if SHARED_REFRESH_SECONDS > 0 and now >= next_shared_refresh:
+            next_shared_refresh = now + SHARED_REFRESH_SECONDS
+            _refresh_shared_memory()
         ts = _read_activity_ts()
         if ts is None:
             await asyncio.sleep(POLL_SECONDS)

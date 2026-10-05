@@ -19,7 +19,7 @@
 //
 // Not ported (on purpose): session-start autoindex and the per-turn git
 // fingerprint re-ingest. Freshness is the operator's: re-run index-repo.
-// Requires a Cognee server >= 1.5.3.
+// Requires a Cognee server >= 1.5.4.
 // ---------------------------------------------------------------------------
 
 import { createHash } from "node:crypto";
@@ -61,7 +61,10 @@ function readableTail(canonical: string): string {
 export function defaultCodeDataset(spec: string): string {
   const canonical = canonicalSpec(spec);
   const digest = createHash("sha256").update(canonical, "utf-8").digest("hex").slice(0, 8);
-  return `codebase-${readableTail(canonical).toLowerCase()}-${digest}`;
+  // Dots are fine in the repo slug but cognee rejects them in a dataset name
+  // (check_dataset_name), so a repo like `foo.js` could never be indexed.
+  const tail = readableTail(canonical).toLowerCase().replace(/\./g, "-");
+  return `codebase-${tail}-${digest}`;
 }
 
 // ---------------------------------------------------------------------------

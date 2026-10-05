@@ -18,7 +18,11 @@ Contract — what gets printed to stdout:
 Diagnostics also go to stderr so the caller can surface them.
 """
 
+from __future__ import annotations
+
+import hashlib
 import json
+import math
 import os
 import socket
 import sys
@@ -51,6 +55,17 @@ def _multipart_body(fields, files):
         chunks.append(b"\r\n")
     chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
     return b"".join(chunks), boundary
+
+
+def text_upload_name(node_set, content):
+    """Upload filename for inline remember text: ``{node_set}-{sha256[:32]}.txt``.
+
+    128 bits of the digest: the server's own content identity is an md5, so a
+    longer suffix would not make two texts any more distinct than it already
+    treats them.
+    """
+    data = content.encode("utf-8") if isinstance(content, str) else content
+    return f"{node_set or 'content'}-{hashlib.sha256(data).hexdigest()[:32]}.txt"
 
 
 def _error(status, message):
@@ -102,6 +117,17 @@ def _explicit_wait_seconds():
     immediate recall sees the not-yet-cognified graph. 0 disables (fire-and-forget).
     """
     return _float_env("COGNEE_REMEMBER_WAIT_SECONDS", 8.0)
+
+
+def _remember_timeout():
+    """Client timeout (seconds) for the remember submit POST.
+
+    Tunable independently of recall/register via ``COGNEE_REMEMBER_TIMEOUT``;
+    defaults to 120s, the value ``do_remember`` has always used.
+    """
+    value = _float_env("COGNEE_REMEMBER_TIMEOUT", 120.0)
+    # 0, negatives, inf and nan would make the socket fail at once or raise.
+    return value if math.isfinite(value) and value > 0 else 120.0
 
 
 def _poll_status(
@@ -171,13 +197,26 @@ def do_remember(
     node_set,
     *,
     file_path=None,
+    dataset_id="",
     opener=urllib.request.urlopen,
     timeout=120.0,
 ):
     """POST content to the server. Return {"ok": true}, an error envelope, or UNREACHABLE.
 
+    ``dataset_id`` addresses the target by UUID (sent as ``datasetId``, which
+    the endpoint accepts in place of ``datasetName``). Under shared agent
+    memory that is the canonical parent-owned dataset; by name, an agent would
+    silently create and write its own empty copy instead.
+
+    Inline text is uploaded as ``{node_set}-{sha256[:32]}.txt``. cognee >= 1.6.0
+    treats an upload's filename as its identity within the dataset and refuses
+    (409) a known name arriving with different content, so a fixed name would
+    reject every remember after the first per node_set (#444). Hashing the
+    content keeps each distinct text distinct, while re-remembering the same
+    text reuses the name and stays the server's content-hash dedup no-op.
+
     With ``file_path``, the file's bytes are uploaded under its REAL basename
-    instead of the synthetic ``{node_set}.txt``. The filename extension is the
+    instead of the synthetic text name. The filename extension is the
     server's loader-routing signal: a ``.py``/``.ts``/... upload rides the
     zero-LLM code-graph route (cognify CODE route, cognee >= 1.5.x), while the
     ``.txt`` rename would silently ingest code as prose through the LLM
@@ -185,21 +224,30 @@ def do_remember(
     limits on large sources.
     """
     url = service_url.rstrip("/") + "/api/v1/remember"
-    filename = f"{node_set or 'content'}.txt"
     if file_path:
         try:
             with open(file_path, "rb") as fh:
                 content = fh.read()
         except OSError as e:
             return _error(0, "cannot read %s: %s" % (file_path, str(e)[:160]))
-        filename = os.path.basename(str(file_path).rstrip("/")) or filename
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    # Hash only when the name needs it: a --file upload keeps its basename.
+    filename = os.path.basename(str(file_path).rstrip("/")) if file_path else ""
+    filename = filename or text_upload_name(node_set, content)
+    from _dataset_access import dataset_id as parse_dataset_id
+
+    # The explicit UUID (shared memory's canonical dataset) wins; otherwise a
+    # UUID-shaped dataset is sent as datasetId and a name as datasetName.
+    ident = str(dataset_id or "").strip() or parse_dataset_id(dataset)
+    fields = {"node_set": node_set, "run_in_background": _background_flag()}
+    if ident:
+        fields["datasetId"] = ident
+    else:
+        fields["datasetName"] = dataset
     body, boundary = _multipart_body(
-        {
-            "datasetName": dataset,
-            "node_set": node_set,
-            "run_in_background": _background_flag(),
-        },
-        [("data", filename, content.encode("utf-8") if isinstance(content, str) else content)],
+        fields,
+        [("data", filename, content)],
     )
     headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
     # Always attach the key when present: cognee >=1.2.2 enforces auth on its
@@ -281,11 +329,21 @@ def do_remember(
 
 
 def main(argv):
-    # argv: service_url, api_key, content, dataset, node_set[, file_path]
+    # argv: service_url, api_key, content, dataset, node_set[, file_path[, dataset_id]]
     # With file_path set (arg 6), content (arg 3) is ignored: the file's bytes
     # are uploaded under their real basename so code files route as code.
-    a = list(argv) + [""] * 6
-    result = do_remember(a[0], a[1], a[2], a[3], a[4], file_path=a[5] or None)
+    # dataset_id (arg 7) addresses the dataset by UUID instead of the name.
+    a = list(argv) + [""] * 7
+    result = do_remember(
+        a[0],
+        a[1],
+        a[2],
+        a[3],
+        a[4],
+        file_path=a[5] or None,
+        dataset_id=a[6],
+        timeout=_remember_timeout(),
+    )
     print(UNREACHABLE if result == UNREACHABLE else json.dumps(result))
     if result != UNREACHABLE:
         # Refresh the status-line credits marker, attributing the spend delta
@@ -296,8 +354,18 @@ def main(argv):
         try:
             os.environ.setdefault("COGNEE_PLUGIN_IN_VENV", "1")
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from _plugin_common import refresh_credits
+            from _plugin_common import (
+                clear_payment_required,
+                record_payment_required,
+                refresh_credits,
+            )
 
+            # A 402 is the server refusing to pay for this remember; note it
+            # for the status line. A remember that got through clears the note.
+            if isinstance(result, dict) and result.get("status") == 402:
+                record_payment_required("remember")
+            elif isinstance(result, dict) and not result.get("error"):
+                clear_payment_required()
             refresh_credits("remember")
         except Exception:
             pass

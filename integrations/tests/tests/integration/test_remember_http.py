@@ -12,9 +12,7 @@ Covers the two fixes:
     caller does not fall back to the CLI and risk a duplicate write — while a
     real connection failure still returns UNREACHABLE.
 
-The bounded cognify wait is gated on ``suite.has_background_remember`` and now
-holds for all registered suites — Codex gained it in the port that landed in
-main, and Antigravity inherits that current core.
+The bounded cognify wait holds for all registered suites.
 
 Migrated from claude-code/tests/test_remember_http.py; the transport-exception
 half lives in unit/test_remember_http_transport.py.
@@ -60,6 +58,36 @@ def test_background_opt_out_reaches_the_wire(rh, mock_server, monkeypatch):
     assert call["form"]["run_in_background"] == "false"
 
 
+def _uploaded_names(mock_server):
+    return [n for c in mock_server.calls if c["path"] == REMEMBER for n in c.get("filenames", [])]
+
+
+def test_distinct_texts_upload_under_distinct_names(rh, mock_server):
+    # cognee >= 1.6.0 refuses (409) a known upload name with new content, so a
+    # fixed "{node_set}.txt" lost every remember after the first (#444).
+    _remember(rh, mock_server.url, content="first", node_set="user_context")
+    _remember(rh, mock_server.url, content="second", node_set="user_context")
+    first, second = _uploaded_names(mock_server)
+    assert first != second
+    for name in (first, second):
+        assert name.startswith("user_context-") and name.endswith(".txt")
+
+
+def test_same_text_reuses_its_name(rh, mock_server):
+    # Same content, same name: the server's content-hash dedup keeps it a no-op.
+    _remember(rh, mock_server.url, content="same")
+    _remember(rh, mock_server.url, content="same")
+    first, second = _uploaded_names(mock_server)
+    assert first == second == rh.text_upload_name("user_context", "same")
+
+
+def test_file_upload_keeps_its_basename(rh, mock_server, tmp_path):
+    path = tmp_path / "module.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    rh.do_remember(mock_server.url, "", "", "ds", "project_docs", file_path=str(path))
+    assert _uploaded_names(mock_server) == ["module.py"]
+
+
 def test_api_key_header_attached(rh, mock_server):
     _remember(rh, mock_server.url, api_key="cloud-key")
     call = mock_server.assert_called("POST", REMEMBER)
@@ -98,13 +126,13 @@ def test_connection_failure_is_unreachable(rh, closed_port_url):
     assert _remember(rh, closed_port_url) == rh.UNREACHABLE
 
 
-# ── the bounded cognify wait (claude-code only) ────────────────────────────
+# ── the bounded cognify wait ───────────────────────────────────────────────
 
 
 @pytest.fixture
 def waits(suite):
-    if not suite.has_background_remember:
-        pytest.skip(f"{suite.name}: do_remember is submit-only (no bounded cognify wait)")
+    """Every registered suite has the bounded wait; kept as a named fixture so the
+    tests below read as what they are."""
 
 
 def test_response_body_parsed_into_result(rh, mock_server, waits, monkeypatch):

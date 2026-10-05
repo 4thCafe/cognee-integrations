@@ -4,15 +4,20 @@
 Launched detached from ``session-start.py``. Polls
 ``~/.cognee-plugin/codex/activity.ts`` every ``POLL_SECONDS``. When the last
 activity is older than ``IDLE_SECONDS`` and we haven't bridged since
-that point, persists the session cache and refreshes graph context.
+that point, persists the session cache and refreshes graph context, then
+exits; the next prompt respawns it.
 
 Stops cleanly on:
   * ``~/.cognee-plugin/codex/watcher.stop`` sentinel file.
   * Receiving SIGTERM (from SessionEnd hook or manual kill).
   * The pidfile being overwritten by a newer watcher (restart case).
 
-Survives Codex crashes better than foreground hooks.
+Stopping never triggers an improve: the SessionEnd sync that stops this
+watcher runs the session's final improve itself (and the exit watcher does
+the same when the host dies without a SessionEnd).
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -20,7 +25,6 @@ import os
 import signal
 import sys
 import time
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -29,13 +33,17 @@ from event_names import event_fields
 
 # Tunable via env. Defaults chosen to avoid thrashing the LLM: 60s idle
 # threshold means you have to actively pause a full minute. The improve cooldown
-# (COGNEE_IMPROVE_COOLDOWN, 10 minutes) is deliberately NOT a variable here: this
+# (COGNEE_IMPROVE_COOLDOWN, 30 minutes) is deliberately NOT a variable here: this
 # process exits after one bridge and is respawned on the next prompt, so a
 # process-local timestamp reset every turn and the cooldown never gated
 # anything. It lives in the per-session improve state instead
 # (_plugin_common.improve_throttle_reason), shared by every trigger.
 POLL_SECONDS = float(os.environ.get("COGNEE_IDLE_POLL", "10"))
 IDLE_SECONDS = float(os.environ.get("COGNEE_IDLE_THRESHOLD", "60"))
+# Shared agent memory: how often to re-resolve the active dataset's UUIDs and
+# backfill the shared role's grants, so a dataset another plugin created shows
+# up here within this interval rather than at the next session start.
+SHARED_REFRESH_SECONDS = float(os.environ.get("COGNEE_SHARED_MEMORY_REFRESH", "60"))
 
 _PLUGIN_DIR = Path.home() / ".cognee-plugin" / "codex"
 _ACTIVITY = _PLUGIN_DIR / "activity.ts"
@@ -92,75 +100,39 @@ def _install_signal_handlers() -> None:
 
 
 async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
-    """Fire one session improve cycle. Returns True on success."""
+    """Submit one session improve over HTTP. True only when the improve landed.
+
+    The server bridges the session from its own cache
+    (``run_session_improve_detailed``). Without server auth there is nothing to
+    submit to; the session-end sync covers the session once a key is available.
+    """
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from _plugin_common import (  # type: ignore
             http_api_ready,
-            load_resolved,
-            resolve_user,
-            run_session_improve,
+            run_session_improve_detailed,
             set_session_key,
-            sync_lock,
         )
 
         session_key = str(config.get("session_key") or "").strip()
         if session_key:
             set_session_key(session_key)
-        api_mode = http_api_ready()
-        # Server-side improve has its own per-session lock; only local SDK
-        # mode needs the cross-hook file lock.
-        lock = nullcontext(True) if api_mode else sync_lock("idle-watcher")
+        if not http_api_ready():
+            _log("bridge_skipped_no_auth", session=session_id, dataset=dataset)
+            return False
+        outcome = run_session_improve_detailed(dataset, session_id, trigger="idle")
+        _log(
+            "session_bridge_done",
+            session=session_id,
+            dataset=dataset,
+            via="http_improve",
+            wrote=bool(outcome.get("ok")),
+            reason=str(outcome.get("reason") or ""),
+        )
+        return bool(outcome.get("ok"))
     except Exception as exc:
-        _log("sync_lock_import_error", error=str(exc)[:200])
-        api_mode = False
-        lock = nullcontext(True)
-
-    with lock as acquired:
-        if not acquired:
-            _log("bridge_skipped_lock_busy", session=session_id, dataset=dataset)
-            return False
-
-        try:
-            from config import (  # type: ignore
-                ensure_cognee_ready,
-                ensure_dataset_ready,
-                ensure_identity,
-                improve_session_local,
-            )
-
-            if api_mode:
-                wrote = run_session_improve(dataset, session_id, trigger="idle")
-                _log(
-                    "session_bridge_done",
-                    session=session_id,
-                    dataset=dataset,
-                    via="http_improve",
-                    wrote=wrote,
-                )
-                return True
-
-            await ensure_cognee_ready(config)
-            user_id = str(config.get("user_id") or load_resolved().get("user_id") or "")
-            if not user_id:
-                user_id, _ = await ensure_identity(config)
-
-            user = await resolve_user(user_id) if user_id else None
-            if user:
-                await ensure_dataset_ready(dataset, user)
-                result = await improve_session_local(dataset, session_id, user, trigger="idle")
-                _log(
-                    "session_bridge_done",
-                    session=session_id,
-                    dataset=dataset,
-                    user_id=str(user.id),
-                    via="local_improve",
-                    ok=bool(result.get("ok")),
-                )
-            return True
-        except Exception as exc:
-            _log("bridge_error", error=str(exc)[:300])
-            return False
+        _log("bridge_error", error=str(exc)[:300])
+        return False
 
 
 def _run_update_check() -> None:
@@ -204,7 +176,9 @@ def _check_llm_key(config: dict) -> None:
             return
         sys.path.insert(0, os.path.dirname(__file__))
         from _plugin_common import (
+            clear_llm_state,
             get_session_key,
+            llm_key_owner,
             read_llm_state,
             service_url_is_local,
             write_llm_state,
@@ -213,6 +187,13 @@ def _check_llm_key(config: dict) -> None:
         base_url = str(config.get("base_url") or "")
         if base_url and not service_url_is_local(base_url):
             return  # cloud: the remote server owns its own LLM key
+        # Loopback is not ownership: a server this plugin did not start reads its
+        # key from its own environment, so ours says nothing about it (#371).
+        owner = llm_key_owner(config)
+        if owner:
+            clear_llm_state()
+            _log("llm_key_check_skipped", reason=owner)
+            return
 
         # Throttle against OUR OWN last verdict only. The marker is machine-wide, so
         # honouring another session's timestamp would let a keyless launch's verdict
@@ -294,7 +275,19 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
     # Validate the LLM key once at session start (background, provider-agnostic).
     _check_llm_key(config)
     exit_reason = "loop_complete"
-    bridge_disabled = False
+    # First shared-memory refresh one interval in: SessionStart just resolved
+    # everything, so an immediate re-resolve would only repeat its calls.
+    next_shared_refresh = time.time() + SHARED_REFRESH_SECONDS
+
+    def _refresh_shared_memory() -> None:
+        try:
+            from _plugin_common import refresh_shared_memory
+
+            if refresh_shared_memory():
+                _log("shared_memory_refreshed", session=session_id)
+        except Exception as exc:
+            _log("shared_memory_refresh_failed", error=str(exc)[:200])
+
     last_throttle_reason = ""
     known_pair = (session_id, dataset)
 
@@ -307,15 +300,6 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
         except Exception as exc:
             _log("throttle_check_failed", error=str(exc)[:200])
             return ""
-
-    def _last_improved_at(sid: str) -> float:
-        """When this session last improved successfully (any trigger); 0 if never."""
-        try:
-            from _plugin_common import read_improve_state
-
-            return float(read_improve_state(sid).get("last_improved_at", 0) or 0)
-        except Exception:
-            return 0.0
 
     def _current_pair() -> tuple[str, str]:
         """The launch's live (session_id, dataset), re-read before every bridge.
@@ -350,13 +334,16 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
             break
 
         now = time.time()
+        if SHARED_REFRESH_SECONDS > 0 and now >= next_shared_refresh:
+            next_shared_refresh = now + SHARED_REFRESH_SECONDS
+            _refresh_shared_memory()
         ts = _read_activity_ts()
         if ts is None:
             await asyncio.sleep(POLL_SECONDS)
             continue
 
         idle_for = now - ts
-        if not bridge_disabled and idle_for >= IDLE_SECONDS:
+        if idle_for >= IDLE_SECONDS:
             sid, ds = _current_pair()
             reason = _throttle_reason(sid)
             if reason:
@@ -376,32 +363,24 @@ async def _main_loop(session_id: str, dataset: str, config: dict) -> None:
                 continue
             last_throttle_reason = ""
             _log("idle_trigger", idle_for=round(idle_for, 1))
+            # One attempt per watcher life, landed or not. The next prompt
+            # respawns the watcher, and a failed attempt has armed the improve
+            # backoff, so the retry comes after the cooldown rather than every
+            # poll — and rather than never, which is what disabling the bridge
+            # for the rest of the process did.
             ok = await _improve_once(sid, ds, config)
-            if ok:
-                _log("bridge_done")
-                exit_reason = "bridge_complete"
-                break
-            bridge_disabled = True
-            _log("bridge_disabled_after_failure")
+            _log("bridge_done" if ok else "bridge_failed")
+            exit_reason = "bridge_complete" if ok else "bridge_failed"
+            break
 
         await asyncio.sleep(POLL_SECONDS)
 
     if _should_stop:
         exit_reason = "signal"
 
-    ts = _read_activity_ts()
-    if not bridge_disabled and exit_reason in {"signal", "stop_sentinel"} and ts:
-        sid, ds = _current_pair()
-        # Only when something happened after the last improve (any trigger):
-        # the SessionEnd sync that sent the SIGTERM runs its own final improve.
-        if ts > _last_improved_at(sid):
-            _log("shutdown_trigger", reason=exit_reason, activity_age=round(time.time() - ts, 1))
-            ok = await _improve_once(sid, ds, config)
-            if ok:
-                _log("shutdown_bridge_done")
-            else:
-                _log("shutdown_bridge_failed")
-
+    # No improve on the way out: the SessionEnd sync that stops this watcher
+    # runs the final improve itself (and the exit watcher does when the host
+    # dies without a SessionEnd).
     _log("exiting", reason=exit_reason)
     try:
         if _owns_pidfile():

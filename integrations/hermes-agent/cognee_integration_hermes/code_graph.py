@@ -4,9 +4,10 @@ Ported from the claude-code/codex plugins' ``_code_graph.py``, minus transport
 (the :class:`~.backend.MemoryBackend` owns that) and minus the freshness /
 auto-index machinery: Hermes sessions are rarely launched inside a checkout,
 so repositories are indexed explicitly — ``hermes cognee index-repo`` — the
-way the OpenClaw plugin chose too. Requires a cognee server >= 1.5.3 (the
-release that opened ``content_type="code"`` on /api/v1/remember and the
-``code`` recall scope).
+way the OpenClaw plugin chose too. Requires a cognee server >= 1.5.4:
+1.5.3 opened ``content_type="code"`` on /api/v1/remember and the ``code``
+recall scope, and 1.5.4 renamed the repo-spec form field from
+``repositories`` to ``raw_data``.
 
 Two responsibilities:
 
@@ -206,7 +207,10 @@ def default_code_dataset(spec: str) -> str:
     """
     canonical = canonical_spec(spec)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
-    return f"codebase-{_readable_tail(canonical).lower()}-{digest}"
+    # Dots are fine in the repo slug but cognee rejects them in a dataset name
+    # (check_dataset_name), so a repo like ``foo.js`` could never be indexed.
+    tail = _readable_tail(canonical).lower().replace(".", "-")
+    return f"codebase-{tail}-{digest}"
 
 
 def _state_path(key: str) -> Path:

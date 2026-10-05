@@ -147,7 +147,7 @@ def test_plugin_manifest_identifies_cognee_with_a_version_string(plugin_root):
     spec = json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))
 
     assert spec["name"] == "cognee"
-    assert spec["version"] == "1.4.3"
+    assert spec["version"] == "1.6.3"
 
 
 def test_hooks_manifest_is_at_plugin_root_not_claude_hooks_directory(manifest):
@@ -416,7 +416,10 @@ def test_all_hook_commands_are_relative_runner_commands_with_safe_second_timeout
 def test_hook_runner_selects_an_interpreter_before_running_the_adapter(plugin_root):
     assert POSIX_HOOK_RUNNER.is_file(), f"missing POSIX hook runner: {POSIX_HOOK_RUNNER}"
     assert WINDOWS_HOOK_RUNNER.is_file(), f"missing Windows hook runner: {WINDOWS_HOOK_RUNNER}"
-    assert POSIX_HOOK_RUNNER.stat().st_mode & stat.S_IXUSR
+    # Git checkouts on Windows carry no executable bit (every file is 0o666),
+    # so the mode is only meaningful where the POSIX runner actually runs.
+    if os.name != "nt":
+        assert POSIX_HOOK_RUNNER.stat().st_mode & stat.S_IXUSR
 
     posix = POSIX_HOOK_RUNNER.read_text(encoding="utf-8")
     windows = WINDOWS_HOOK_RUNNER.read_text(encoding="utf-8")
@@ -559,7 +562,7 @@ def test_search_shell_keeps_the_shared_recall_breaker(monkeypatch, tmp_path):
         }
     )
     result = subprocess.run(
-        ["bash", str(SCRIPTS_DIR / "cognee-search.sh"), "question", "--session"],
+        ["bash", str(SCRIPTS_DIR / "cognee-search.sh"), "question", "--graph"],
         cwd=tmp_path,
         env=env,
         check=True,

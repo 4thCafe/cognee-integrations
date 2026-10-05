@@ -6,6 +6,8 @@ Stop hook is the integration-level demo workaround: when enabled, it empties
 the transcript file Claude passes in the hook payload.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -13,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _logfiles import append_line as _append_log_line
+from _plugin_common import is_observer_child
 from event_names import event_fields
 
 ENV_NAME = "COGNEE_CLAUDE_CLEAR_AFTER_MESSAGE"
@@ -64,6 +67,8 @@ def _clear_transcript(payload: dict) -> tuple[bool, str]:
 
 
 def main() -> int:
+    if is_observer_child():
+        return 0
     payload_raw = sys.stdin.read()
     if not _enabled() or not payload_raw.strip():
         return 0
